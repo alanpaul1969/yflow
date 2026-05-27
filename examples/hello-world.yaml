@@ -1,0 +1,21 @@
+name: "Hello YAMLflow"
+description: "Demonstrates command execution, variable passing, and sub-workflows"
+version: "1.0"
+
+steps:
+  - id: greet
+    name: "Say hello"
+    type: command
+    command: "echo 'Hello from YAMLflow!'"
+
+  - id: verify
+    name: "Verify greeting was captured"
+    type: command
+    command: "echo 'Previous step output: $greet.output'"
+    depends_on: greet
+
+  - id: summary
+    name: "Final summary"
+    type: command
+    command: "echo 'All done! Steps completed: greet → verify → summary'"
+    depends_on: verify
