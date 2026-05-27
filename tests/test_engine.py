@@ -1,4 +1,4 @@
-"""Tests for yamlflow.engine."""
+"""Tests for yflow.engine."""
 
 import json
 import os
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from yamlflow.engine import (
+from yflow.engine import (
     build_workflow_prompt,
     classify_task,
     execute_workflow,

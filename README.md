@@ -1,4 +1,4 @@
-# YAMLflow
+# yflow
 
 > **The Makefile for AI workflows** — 1 dependency, zero daemons, provider-agnostic.
 
@@ -116,8 +116,8 @@ Or use with any agent that can consume a prompt string.
 ## Learn More
 
 - [Examples](./examples/)
-- [GitHub Repository](https://github.com/alanpaul1969/yamlflow)
-- [Report an Issue](https://github.com/alanpaul1969/yamlflow/issues)
+- [GitHub Repository](https://github.com/alanpaul1969/yflow)
+- [Report an Issue](https://github.com/alanpaul1969/yflow/issues)
 
 ## License
 
