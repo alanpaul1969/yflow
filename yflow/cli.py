@@ -432,7 +432,7 @@ steps:
   #   depends_on: review
 
 # Tips:
-# - type: subagent | skill | command | reasonix | opencode | workflow
+# - type: subagent | skill | command | reasonix | opencode | workflow | gbrain
 # - depends_on: step_id or [step_id1, step_id2]
 # - Steps without depends_on run in the first wave (can be parallel)
 # - Use $variables.xxx to reference global variables
