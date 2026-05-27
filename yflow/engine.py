@@ -169,19 +169,123 @@ def execute_command_step(step: dict, session: WorkflowSession) -> str:
 
 
 def execute_reasonix_step(step: dict, session: WorkflowSession) -> str:
-    """Run a reasonix step locally and capture its output."""
-    import subprocess as _sp
+    """Run a reasonix step locally and capture its output.
 
-    prompt = session.resolve(step["prompt"])
+    Supports two modes:
+      - run (default): Read-only analysis via `reasonix run` — 91%+ cache hit
+      - acp: Code/write mode via `reasonix acp` — full filesystem + terminal tools
+
+    For acp mode, uses ACP JSON-RPC over stdio to spawn a headless coding agent.
+    Requires DEEPSEEK_API_KEY in environment.
+    """
+    import subprocess as _sp
+    import json as _json
+
+    prompt = session.resolve(step.get("prompt", step.get("context", "")))
+    mode = step.get("mode", "run")
     model = step.get("model", "flash")
-    r = _sp.run(
-        f'reasonix run "{prompt}" --model {model}',
-        shell=True,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    output = (r.stdout or r.stderr)[:20000]
+    workdir = session.resolve(step.get("workdir", os.getcwd()))
+    timeout = step.get("timeout", 600 if mode == "acp" else 300)
+
+    if mode == "acp":
+        # ACP mode: full coding agent via reasonix acp
+        # Build JSON-RPC payload for initialize + session/new + session/prompt
+        init_req = _json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientCapabilities": {
+                    "fs": {"readTextFile": True, "writeTextFile": True}
+                },
+                "clientInfo": {
+                    "name": "yflow", "title": "yflow engine", "version": "0.1.0"
+                }
+            }
+        })
+        session_req = _json.dumps({
+            "jsonrpc": "2.0", "id": 2, "method": "session/new",
+            "params": {"cwd": workdir, "mcpServers": []}
+        })
+        prompt_req = _json.dumps({
+            "jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+            "params": {
+                "sessionId": "SESSION_ID_PLACEHOLDER",
+                "prompt": [{"type": "text", "text": prompt}]
+            }
+        })
+
+        # Use a Python one-liner to handle the ACP handshake
+        acp_script = f'''
+import sys, json, os
+os.chdir({workdir!r})
+
+# Read initialize response
+init = json.loads(sys.stdin.readline())
+if "error" in init:
+    print("ACP init failed: " + str(init.get("error")), file=sys.stderr)
+    sys.exit(1)
+
+# Send session/new
+print(json.dumps({{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{workdir!r},"mcpServers":[]}}}}))
+sys.stdout.flush()
+sess = json.loads(sys.stdin.readline())
+sid = sess.get("result",{{}}).get("sessionId","")
+if not sid:
+    print("ACP session/new failed: " + str(sess), file=sys.stderr)
+    sys.exit(1)
+
+# Send prompt
+print(json.dumps({{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{{"sessionId":sid,"prompt":[{{"type":"text","text":{prompt!r}}}]}}}}))
+sys.stdout.flush()
+
+# Collect response chunks
+text_parts = []
+while True:
+    try:
+        line = sys.stdin.readline()
+        if not line:
+            break
+        msg = json.loads(line)
+        if msg.get("id") == 3:
+            if "error" in msg:
+                print("ACP error: " + str(msg["error"]), file=sys.stderr)
+            break
+        if msg.get("method") == "session/update":
+            update = msg.get("params",{{}}).get("update",{{}})
+            if update.get("sessionUpdate") == "agent_message_chunk":
+                text = update.get("content",{{}}).get("text","")
+                if text:
+                    text_parts.append(text)
+    except Exception:
+        break
+
+print("".join(text_parts))
+'''
+        r = _sp.run(
+            ["python3", "-c", acp_script],
+            input=_json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": 1,
+                    "clientCapabilities": {"fs": {"readTextFile": True, "writeTextFile": True}},
+                    "clientInfo": {"name": "yflow", "title": "yflow engine", "version": "0.1.0"}
+                }
+            }) + "\n",
+            capture_output=True, text=True, timeout=timeout,
+            env={**os.environ, "HOME": os.path.expanduser("~")}
+        )
+        output = (r.stdout or r.stderr)[:20000]
+    else:
+        # Run mode: read-only, ultra-cheap (default)
+        r = _sp.run(
+            f'reasonix run "{prompt}" --model {model}',
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        output = (r.stdout or r.stderr)[:20000]
+
     session.capture(step["id"], output)
     return output
 

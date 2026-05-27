@@ -84,7 +84,7 @@ yflow run hello-world --native
 | Type | Description | Needs external agent? |
 |------|-------------|-----------------------|
 | `command` | Shell command (native execution) | No |
-| `reasonix` | One-shot reasoning agent | Yes (reasonix CLI) |
+| `reasonix` | One-shot reasoning / coding agent | Yes (reasonix CLI) |
 | `opencode` | Coding agent | Yes (opencode CLI) |
 | `gbrain` | Knowledge memory query/store | Optional (gbrain CLI) |
 | `subagent` | Delegated AI task | Yes |
@@ -133,6 +133,42 @@ cd ~/gbrain && bun install
 ```
 
 Set `GBRAIN_BIN` env var if gbrain is not on `$PATH`. yflow auto-detects `~/.local/bin/bun run ~/gbrain/src/cli.ts` as fallback.
+
+## Variable Passing
+
+### reasonix — DeepSeek-Native Agent (Run + Code)
+
+yflow integrates with [Reasonix](https://github.com/usewhale/reasonix), a DeepSeek-native agent framework with 91%+ cache hit rates. Two modes:
+
+**Run mode (default):** Read-only analysis, ultra-cheap (~$0.00003 per call):
+
+```yaml
+- id: analyze
+  type: reasonix
+  prompt: "Review this code for security issues"
+  model: flash  # flash or pro (default: flash)
+```
+
+**ACP mode:** Full coding agent — read, write, edit files, run terminal commands:
+
+```yaml
+- id: fix_bug
+  type: reasonix
+  mode: acp
+  prompt: "Fix the race condition in worker.py"
+  workdir: /home/user/project
+  model: flash
+  timeout: 600
+```
+
+Fields for reasonix steps:
+- `prompt` — task description
+- `mode` — `run` (default, read-only) or `acp` (coding with filesystem access)
+- `model` — `flash` (default) or `pro`
+- `workdir` — working directory for acp mode (default: cwd)
+- `timeout` — seconds (default: 300 run / 600 acp)
+
+Requires [Reasonix CLI](https://github.com/usewhale/reasonix) and `DEEPSEEK_API_KEY` in environment.
 
 ## Variable Passing
 
