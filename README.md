@@ -86,9 +86,53 @@ yflow run hello-world --native
 | `command` | Shell command (native execution) | No |
 | `reasonix` | One-shot reasoning agent | Yes (reasonix CLI) |
 | `opencode` | Coding agent | Yes (opencode CLI) |
+| `gbrain` | Knowledge memory query/store | Optional (gbrain CLI) |
 | `subagent` | Delegated AI task | Yes |
 | `skill` | Reusable skill/capability | Yes |
 | `workflow` | Reference another workflow | No |
+
+### gbrain — Optional Knowledge Memory
+
+yflow integrates with [gbrain](https://github.com/garrytan/gbrain) as an optional tool backend. gbrain is Garry Tan's knowledge memory system — a vector database for storing and retrieving structured knowledge across sessions.
+
+```yaml
+steps:
+  # Query past knowledge before coding
+  - id: check_known
+    type: gbrain
+    action: query
+    query: "LanceDB dimension mismatch fix"
+    output_as: past_solution
+
+  # Save new knowledge
+  - id: record_fix
+    type: gbrain
+    action: put
+    slug: "new-bug-pattern"
+    content: |
+      # Bug: $check_known.output
+
+  # Full-text search
+  - id: find_patterns
+    type: gbrain
+    action: search
+    query: "Riverpod context loss"
+
+  # Read a page
+  - id: read_page
+    type: gbrain
+    action: get
+    slug: "lancedb-dimension-mismatch"
+```
+
+**Installation:** gbrain is NOT a pip dependency. Install it separately:
+
+```bash
+git clone https://github.com/garrytan/gbrain ~/gbrain
+cd ~/gbrain && bun install
+```
+
+Set `GBRAIN_BIN` env var if gbrain is not on `$PATH`. yflow auto-detects `~/.local/bin/bun run ~/gbrain/src/cli.ts` as fallback.
 
 ## Variable Passing
 

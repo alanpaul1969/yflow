@@ -34,7 +34,7 @@ TEMPLATES_DIR = os.path.join(os.path.dirname(WORKFLOWS_DIR), "workflows", "_temp
 # YAML Schema
 # ---------------------------------------------------------------------------
 
-STEP_TYPES = {"subagent", "skill", "command", "reasonix", "opencode", "workflow"}
+STEP_TYPES = {"subagent", "skill", "command", "reasonix", "opencode", "workflow", "gbrain"}
 
 
 def validate_workflow(data: dict) -> List[str]:
@@ -79,6 +79,19 @@ def validate_workflow(data: dict) -> List[str]:
 
         if stype == "command" and "command" not in step:
             errors.append(f"{prefix}: type=command requires 'command' field")
+
+        if stype == "gbrain" and "action" not in step:
+            errors.append(f"{prefix}: type=gbrain requires 'action' field (query/search/put/get)")
+        elif stype == "gbrain":
+            action = step["action"]
+            if action not in ("query", "search", "put", "get"):
+                errors.append(f"{prefix}: unknown gbrain action '{action}', must be query/search/put/get")
+            if action in ("query", "search") and "query" not in step:
+                errors.append(f"{prefix}: gbrain {action} requires 'query' field")
+            if action == "put" and ("slug" not in step or "content" not in step):
+                errors.append(f"{prefix}: gbrain put requires 'slug' and 'content' fields")
+            if action == "get" and "slug" not in step:
+                errors.append(f"{prefix}: gbrain get requires 'slug' field")
 
     # Validate depends_on references
     for i, step in enumerate(data["steps"]):
@@ -207,6 +220,76 @@ def execute_subworkflow_step(
     output = _json.dumps(result.get("local_outputs", {}), ensure_ascii=False)
     session.capture(step["id"], output)
     return output
+
+
+def execute_gbrain_step(step: dict, session: WorkflowSession) -> str:
+    """Run a gbrain step — query/search/put/get against the knowledge brain.
+
+    Requires gbrain CLI available. Set GBRAIN_BIN env var to override path.
+    Silently skips with warning if gbrain is not installed.
+    """
+    import shutil as _shutil
+    import subprocess as _sp
+
+    # Resolve gbrain binary
+    gbrain_bin = os.environ.get("GBRAIN_BIN")
+    if not gbrain_bin:
+        gbrain_bin = _shutil.which("gbrain")
+    if not gbrain_bin:
+        # Fall back to local repo
+        repo_cli = os.path.expanduser("~/gbrain/src/cli.ts")
+        if os.path.exists(repo_cli):
+            bun = _shutil.which("bun") or os.path.expanduser("~/.local/bin/bun")
+            gbrain_bin = f"{bun} run {repo_cli}"
+
+    if not gbrain_bin:
+        msg = "[gbrain] gbrain CLI not found — install with: git clone https://github.com/garrytan/gbrain ~/gbrain && cd ~/gbrain && bun install"
+        session.capture(step["id"], msg)
+        return msg
+
+    action = step["action"]
+    sid = step["id"]
+    limit = step.get("limit", 5)
+
+    try:
+        if action in ("query", "search"):
+            query = session.resolve(step["query"])
+            cmd = f'{gbrain_bin} {action} "{query}" --limit {limit}'
+            source = step.get("source")
+            if source:
+                cmd += f" --source {source}"
+
+        elif action == "put":
+            slug = session.resolve(step["slug"])
+            content = session.resolve(step["content"])
+            cmd = f'{gbrain_bin} put "{slug}"'
+            r = _sp.run(
+                f'echo "{content}" | {cmd}',
+                shell=True, capture_output=True, text=True, timeout=60,
+            )
+            output = r.stdout or r.stderr or f"put {slug}: ok"
+            session.capture(sid, output[:10000])
+            return output[:10000]
+
+        elif action == "get":
+            slug = session.resolve(step["slug"])
+            cmd = f'{gbrain_bin} get "{slug}"'
+
+        r = _sp.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=120,
+        )
+        output = r.stdout or r.stderr or f"{action} {step.get('query', step.get('slug', ''))}: no output"
+        session.capture(sid, output[:20000])
+        return output[:20000]
+
+    except _sp.TimeoutExpired:
+        msg = f"[gbrain] {action} timed out after 120s"
+        session.capture(sid, msg)
+        return msg
+    except Exception as e:
+        msg = f"[gbrain] {action} error: {e}"
+        session.capture(sid, msg)
+        return msg
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +578,8 @@ def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
                 execute_opencode_step(step, session)
             elif stype == "workflow":
                 execute_subworkflow_step(step, session, workflows_dir=wdir)
+            elif stype == "gbrain":
+                execute_gbrain_step(step, session)
             else:
                 # subagent / skill — defer to external executor
                 deferred_steps.append(step)
