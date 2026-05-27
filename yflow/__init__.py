@@ -1,10 +1,10 @@
 """
-YAMLflow — The Makefile for AI workflows.
+yflow — The Makefile for AI workflows.
 
 1 dependency, zero daemons, provider-agnostic.
 """
 
-from yamlflow.engine import (
+from yflow.engine import (
     build_workflow_prompt,
     classify_task,
     execute_workflow,

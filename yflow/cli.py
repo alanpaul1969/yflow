@@ -1,5 +1,5 @@
 """
-CLI for YAMLflow — standalone workflow runner.
+CLI for yflow — standalone workflow runner.
 
 Usage:
   yamlflow run <file>      Execute a workflow
@@ -19,7 +19,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from yamlflow.engine import (
+from yflow.engine import (
     build_workflow_prompt,
     classify_task,
     execute_workflow,
@@ -35,7 +35,7 @@ from yamlflow.engine import (
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="yamlflow",
+        prog="yflow",
         description="YAML-defined multi-agent workflow orchestrator.",
     )
     subs = parser.add_subparsers(dest="command")
@@ -53,7 +53,7 @@ def main():
     )
     run_p.add_argument(
         "--exec", action="store_true",
-        help="Pipe prompt to external agent (use YAMLFLOW_EXEC env var for command)",
+        help="Pipe prompt to external agent (use YFLOW_EXEC env var for command)",
     )
 
     # --- list ---
@@ -180,10 +180,10 @@ def _cmd_run(args) -> int:
 
     # --exec mode: pipe to external agent
     if args.exec:
-        exec_cmd = os.environ.get("YAMLFLOW_EXEC", "")
+        exec_cmd = os.environ.get("YFLOW_EXEC", "")
         if not exec_cmd:
-            print("Error: --exec requires YAMLFLOW_EXEC env var")
-            print("Example: export YAMLFLOW_EXEC='hermes -p'")
+            print("Error: --exec requires YFLOW_EXEC env var")
+            print("Example: export YFLOW_EXEC='hermes -p'")
             return 1
 
         import subprocess

@@ -1,4 +1,4 @@
-name: "Hello YAMLflow"
+name: "Hello yflow"
 description: "Demonstrates command execution, variable passing, and sub-workflows"
 version: "1.0"
 
@@ -6,7 +6,7 @@ steps:
   - id: greet
     name: "Say hello"
     type: command
-    command: "echo 'Hello from YAMLflow!'"
+    command: "echo 'Hello from yflow!'"
 
   - id: verify
     name: "Verify greeting was captured"

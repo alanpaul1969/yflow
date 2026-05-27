@@ -1,13 +1,13 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68,<75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "yamlflow"
+name = "yflow"
 version = "0.1.0"
 description = "The Makefile for AI workflows — 1 dependency, zero daemons, provider-agnostic"
 readme = "README.md"
-license = {text = "MIT"}
+license = {file = "LICENSE"}
 requires-python = ">=3.10"
 authors = [
     {name = "Guo-luen Huang", email = "yflow@maintainers.local"},
@@ -25,7 +25,6 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -46,16 +45,16 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/alanpaul1969/yamlflow"
-Repository = "https://github.com/alanpaul1969/yamlflow.git"
-Issues = "https://github.com/alanpaul1969/yamlflow/issues"
+Homepage = "https://github.com/alanpaul1969/yflow"
+Repository = "https://github.com/alanpaul1969/yflow.git"
+Issues = "https://github.com/alanpaul1969/yflow/issues"
 
 [project.scripts]
 yamlflow = "yamlflow.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["yamlflow*"]
+include = ["yflow*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
