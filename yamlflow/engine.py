@@ -1,0 +1,634 @@
+"""
+YAML Workflow Engine — pure-Python multi-agent workflow orchestrator.
+
+Translates declarative YAML workflow definitions into executable plans.
+Supports subagent delegation, native command execution, variable passing,
+sub-workflows, and template-based creation. One dependency: PyYAML.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+
+
+# ---------------------------------------------------------------------------
+# Paths (configurable via env or param)
+# ---------------------------------------------------------------------------
+
+def _default_workflows_dir() -> str:
+    """Default workflows directory. Override with YAMLFLOW_HOME env var."""
+    home = os.environ.get("YAMLFLOW_HOME", os.path.expanduser("~/.yamlflow"))
+    return os.path.join(home, "workflows")
+
+
+WORKFLOWS_DIR = _default_workflows_dir()
+TEMPLATES_DIR = os.path.join(os.path.dirname(WORKFLOWS_DIR), "workflows", "_templates")
+
+
+# ---------------------------------------------------------------------------
+# YAML Schema
+# ---------------------------------------------------------------------------
+
+STEP_TYPES = {"subagent", "skill", "command", "reasonix", "opencode", "workflow"}
+
+
+def validate_workflow(data: dict) -> List[str]:
+    """Validate a workflow definition. Returns list of errors (empty = valid)."""
+    errors = []
+
+    if not isinstance(data, dict):
+        return ["Workflow must be a YAML dictionary"]
+
+    if "name" not in data:
+        errors.append("Missing required field: 'name'")
+
+    if "steps" not in data or not isinstance(data["steps"], list):
+        errors.append("Missing required field: 'steps' (must be a list)")
+        return errors
+
+    step_ids = set()
+    for i, step in enumerate(data["steps"]):
+        prefix = f"steps[{i}]"
+
+        if not isinstance(step, dict):
+            errors.append(f"{prefix}: must be a dictionary")
+            continue
+
+        if "id" not in step:
+            errors.append(f"{prefix}: missing required field 'id'")
+        else:
+            sid = step["id"]
+            if sid in step_ids:
+                errors.append(f"{prefix}: duplicate step id '{sid}'")
+            step_ids.add(sid)
+
+        stype = step.get("type", "subagent")
+        if stype not in STEP_TYPES:
+            errors.append(
+                f"{prefix}: unknown type '{stype}' "
+                f"(must be one of: {', '.join(STEP_TYPES)})"
+            )
+
+        if stype == "subagent" and "context" not in step:
+            errors.append(f"{prefix}: type=subagent requires 'context' field")
+
+        if stype == "command" and "command" not in step:
+            errors.append(f"{prefix}: type=command requires 'command' field")
+
+    # Validate depends_on references
+    for i, step in enumerate(data["steps"]):
+        deps = step.get("depends_on", [])
+        if isinstance(deps, str):
+            deps = [deps]
+        for dep in deps:
+            if dep not in step_ids:
+                errors.append(
+                    f"steps[{i}].depends_on: referenced step '{dep}' not found"
+                )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Variable resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_variables(
+    template: str, variables: dict, step_outputs: dict = None
+) -> str:
+    """Resolve $variables.x and $step-id.output references in a string."""
+    result = template
+
+    # Resolve $variables.xxx
+    if variables:
+        for key, value in variables.items():
+            result = result.replace(f"$variables.{key}", str(value))
+
+    # Resolve $step-id.output
+    if step_outputs:
+        for step_id, output in step_outputs.items():
+            result = result.replace(f"${step_id}.output", str(output))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Native execution — WorkflowSession + step runners
+# ---------------------------------------------------------------------------
+
+
+class WorkflowSession:
+    """Tracks step outputs during native workflow execution."""
+
+    def __init__(self, variables: dict | None = None):
+        self.outputs: dict[str, str] = {}
+        self.vars: dict[str, str] = variables or {}
+
+    def resolve(self, text: str) -> str:
+        """Replace $variables.X and $step-id.output with actual values."""
+        result = text
+        for k, v in self.vars.items():
+            result = result.replace(f"$variables.{k}", str(v))
+        for step_id, output in self.outputs.items():
+            result = result.replace(f"${step_id}.output", str(output))
+        return result
+
+    def capture(self, step_id: str, output: str) -> None:
+        """Store step output (capped at 10KB to avoid context bloat)."""
+        self.outputs[step_id] = output[:10000]
+
+
+def execute_command_step(step: dict, session: WorkflowSession) -> str:
+    """Run a command-type step locally and capture its output."""
+    import subprocess as _sp
+
+    cmd = session.resolve(step["command"])
+    r = _sp.run(cmd, shell=True, capture_output=True, text=True, timeout=300)
+    output = (r.stdout or r.stderr)[:10000]
+    session.capture(step["id"], output)
+    return output
+
+
+def execute_reasonix_step(step: dict, session: WorkflowSession) -> str:
+    """Run a reasonix step locally and capture its output."""
+    import subprocess as _sp
+
+    prompt = session.resolve(step["prompt"])
+    model = step.get("model", "flash")
+    r = _sp.run(
+        f'reasonix run "{prompt}" --model {model}',
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    output = (r.stdout or r.stderr)[:20000]
+    session.capture(step["id"], output)
+    return output
+
+
+def execute_opencode_step(step: dict, session: WorkflowSession) -> str:
+    """Run an opencode step locally and capture its output."""
+    import subprocess as _sp
+
+    prompt = session.resolve(step["prompt"])
+    binary = os.path.expanduser("~/.opencode/bin/opencode")
+    r = _sp.run(
+        f'{binary} run "{prompt}" --model llama-local/qwen35b',
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    output = (r.stdout or r.stderr)[:20000]
+    session.capture(step["id"], output)
+    return output
+
+
+def execute_subworkflow_step(
+    step: dict, session: WorkflowSession, workflows_dir: str = None
+) -> str:
+    """Load and execute a referenced workflow YAML."""
+    import json as _json
+
+    wdir = Path(workflows_dir or WORKFLOWS_DIR)
+    ref_name = step["workflow"]
+    ref_path = wdir / f"{ref_name}.yaml"
+    if not ref_path.exists():
+        raise FileNotFoundError(f"Sub-workflow not found: {ref_path}")
+    ref_workflow = load_workflow(str(ref_path))
+    result = execute_workflow(ref_workflow)
+    output = _json.dumps(result.get("local_outputs", {}), ensure_ascii=False)
+    session.capture(step["id"], output)
+    return output
+
+
+# ---------------------------------------------------------------------------
+# Dependency resolver
+# ---------------------------------------------------------------------------
+
+
+def resolve_execution_order(steps: List[dict]) -> List[List[str]]:
+    """
+    Resolve steps into execution waves. Each wave is a list of step IDs
+    that can run in parallel. Waves are sequential.
+    """
+    step_map = {s["id"]: s for s in steps}
+    remaining = set(step_map.keys())
+    completed = set()
+    waves = []
+
+    while remaining:
+        wave = []
+        for sid in sorted(remaining):
+            step = step_map[sid]
+            deps = step.get("depends_on", [])
+            if isinstance(deps, str):
+                deps = [deps]
+
+            if all(d in completed for d in deps):
+                wave.append(sid)
+
+        if not wave:
+            # Circular dependency or isolated nodes
+            break
+
+        for sid in wave:
+            remaining.remove(sid)
+        waves.append(wave)
+        completed.update(wave)
+
+    return waves
+
+
+# ---------------------------------------------------------------------------
+# Prompt builder
+# ---------------------------------------------------------------------------
+
+
+def build_workflow_prompt(workflow: dict) -> str:
+    """
+    Build a prompt from a workflow. Uses native execution for command/reasonix/
+    opencode/workflow steps; defers subagent/skill steps for external execution.
+
+    Returns a prompt string for an AI agent to execute remaining steps, or a
+    summary string if all steps were executed natively.
+    """
+    try:
+        result = execute_workflow(workflow)
+        if result["prompt"]:
+            return result["prompt"]
+        # All steps executed natively — return summary
+        outputs = result.get("local_outputs", {})
+        summary = [f"Workflow '{workflow.get('name', '')}' completed natively."]
+        for sid, out in outputs.items():
+            summary.append(f"  {sid}: {len(out)} chars")
+        return "\n".join(summary)
+    except Exception:
+        # Fall back to prompt-only mode for any failure
+        pass
+
+    # Fallback: pure prompt-based execution
+    name = workflow.get("name", "Unnamed Workflow")
+    description = workflow.get("description", "")
+    steps = workflow.get("steps", [])
+    variables = workflow.get("variables", {})
+
+    waves = resolve_execution_order(steps)
+    step_map = {s["id"]: s for s in steps}
+
+    steps_text = []
+    for wave_idx, wave in enumerate(waves):
+        label = (
+            f"Wave {wave_idx + 1} (parallel — {len(wave)} steps)"
+            if len(wave) > 1
+            else f"Step {wave_idx + 1}"
+        )
+        steps_text.append(f"\n### {label}")
+
+        for sid in wave:
+            step = step_map[sid]
+            step_name = step.get("name", sid)
+            stype = step.get("type", "subagent")
+            steps_text.append(f"\n**{sid}**: {step_name} (type={stype})")
+
+            deps = step.get("depends_on", [])
+            if isinstance(deps, str):
+                deps = [deps]
+            if deps:
+                steps_text.append(f"  ← depends on: {', '.join(deps)}")
+
+            if stype in ("subagent", "reasonix", "opencode"):
+                context = step.get("context", step.get("prompt", ""))
+                context = resolve_variables(context, variables)
+                toolsets = step.get("toolsets", ["terminal", "file", "web"])
+                steps_text.append(f"  Use {stype} with toolsets={toolsets}:")
+                for line in context.strip().split("\n"):
+                    steps_text.append(f"    {line}")
+
+            elif stype == "skill":
+                skill_name = step.get("skill", "")
+                steps_text.append(f"  Load skill: {skill_name}")
+
+            elif stype == "command":
+                cmd = resolve_variables(step.get("command", ""), variables)
+                steps_text.append(f"  Command: `{cmd}`")
+
+    vars_text = ""
+    if variables:
+        vars_text = "\n## Variables\n\n"
+        for k, v in variables.items():
+            vars_text += f"- `${k}` = `{v}`\n"
+
+    return f"""Execute the following workflow, delegating each subagent step to an appropriate worker.
+
+## Workflow: {name}
+
+{description}
+
+{vars_text}
+## Execution Plan
+
+{len(waves)} wave(s), {len(steps)} step(s).
+
+{chr(10).join(steps_text)}
+
+## Instructions
+
+1. Load any skills before executing their steps
+2. For subagent steps, use your delegation tool with exact context provided
+3. Steps in same wave can run in parallel via batch delegation
+4. Verify results after each wave before proceeding
+5. Compile final summary after all steps complete
+"""
+
+
+# ---------------------------------------------------------------------------
+# Templates
+# ---------------------------------------------------------------------------
+
+
+def load_template(name: str, templates_dir: str = None) -> dict:
+    """Load a workflow template by name.
+
+    Returns dict with 'content' (raw text) and 'data' (parsed YAML).
+    """
+    tdir = templates_dir or TEMPLATES_DIR
+    path = os.path.join(tdir, f"{name}.yaml")
+
+    if not os.path.exists(path):
+        available = []
+        if os.path.isdir(tdir):
+            available = sorted(
+                f.replace(".yaml", "") for f in os.listdir(tdir) if f.endswith(".yaml")
+            )
+
+        msg = f"Template '{name}' not found in {tdir}"
+        if available:
+            msg += f"\nAvailable templates: {', '.join(available)}"
+        raise FileNotFoundError(msg)
+
+    with open(path, "r") as f:
+        raw_content = f.read()
+
+    data = yaml.safe_load(raw_content)
+    return {"content": raw_content, "data": data}
+
+
+def get_available_templates(templates_dir: str = None) -> list[str]:
+    """Return list of available template names."""
+    tdir = templates_dir or TEMPLATES_DIR
+    if not os.path.isdir(tdir):
+        return []
+
+    return sorted(
+        f.replace(".yaml", "") for f in os.listdir(tdir) if f.endswith(".yaml")
+    )
+
+
+def instantiate_template(template_data: dict, variables: dict) -> str:
+    """Replace all {KEY} placeholders in the template content with values."""
+    content = template_data["content"]
+
+    result = content
+    for key, value in variables.items():
+        placeholder = "{" + key + "}"
+        result = result.replace(placeholder, str(value))
+
+    return result
+
+
+def classify_task(description: str) -> dict:
+    """Keyword-based task classifier. Returns template name and suggested variables."""
+    desc_lower = description.lower()
+
+    flutter_bug_keywords = ("flutter", "bug", "fix", "crash")
+    if all(kw in desc_lower for kw in ("flutter", "bug")) or (
+        desc_lower.count("flutter") > 0
+        and any(kw in desc_lower for kw in ("bug", "fix", "crash"))
+    ):
+        return {
+            "template": "flutter-bug-fix",
+            "variables": {"TASK_DESCRIPTION": description},
+        }
+
+    if desc_lower.count("flutter") > 0 and any(
+        kw in desc_lower for kw in ("feature", "new", "add")
+    ):
+        return {
+            "template": "flutter-feature",
+            "variables": {"TASK_DESCRIPTION": description},
+        }
+
+    backend_keywords = ("api", "backend", "server")
+    bug_fix_keywords = ("bug", "fix", "crash", "error", "broken", "break")
+    feature_keywords = ("feature", "add")
+
+    has_backend = any(kw in desc_lower for kw in backend_keywords)
+    has_bug = any(kw in desc_lower for kw in bug_fix_keywords)
+    has_feature = any(kw in desc_lower for kw in feature_keywords)
+
+    if has_backend and has_bug:
+        return {
+            "template": "backend-bug-fix",
+            "variables": {"TASK_DESCRIPTION": description},
+        }
+
+    if has_backend and has_feature:
+        return {
+            "template": "backend-feature",
+            "variables": {"TASK_DESCRIPTION": description},
+        }
+
+    return {"template": None, "variables": {}}
+
+
+# ---------------------------------------------------------------------------
+# Workflow execution engine — native orchestration
+# ---------------------------------------------------------------------------
+
+
+def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
+    """Execute a workflow natively.
+
+    Runs command/reasonix/opencode/workflow steps locally;
+    defers subagent/skill steps for external execution.
+
+    Returns:
+        {"local_outputs": {step_id: output},
+         "deferred_steps": [...],
+         "prompt": str}
+    """
+    steps = workflow.get("steps", [])
+    variables = workflow.get("variables", {})
+    session = WorkflowSession(variables)
+    waves = resolve_execution_order(steps)
+    step_map = {s["id"]: s for s in steps}
+    wdir = workflows_dir or WORKFLOWS_DIR
+
+    deferred_steps = []
+
+    for wave in waves:
+        for sid in wave:
+            step = step_map[sid]
+            stype = step.get("type", "subagent")
+
+            # Resolve context/command/prompt with current session state
+            if "context" in step:
+                step["_resolved_context"] = session.resolve(step["context"])
+            if "command" in step:
+                step["_resolved_command"] = session.resolve(step["command"])
+            if "prompt" in step:
+                step["_resolved_prompt"] = session.resolve(step["prompt"])
+
+            if stype == "command":
+                execute_command_step(step, session)
+            elif stype == "reasonix":
+                execute_reasonix_step(step, session)
+            elif stype == "opencode":
+                execute_opencode_step(step, session)
+            elif stype == "workflow":
+                execute_subworkflow_step(step, session, workflows_dir=wdir)
+            else:
+                # subagent / skill — defer to external executor
+                deferred_steps.append(step)
+
+    # Build prompt for deferred steps
+    prompt = ""
+    if deferred_steps:
+        prompt = build_deferred_prompt(workflow, deferred_steps, session)
+
+    return {
+        "local_outputs": session.outputs,
+        "deferred_steps": deferred_steps,
+        "prompt": prompt,
+    }
+
+
+def build_deferred_prompt(
+    workflow: dict, deferred_steps: list, session: WorkflowSession
+) -> str:
+    """Build a prompt for deferred subagent/skill steps with outputs injected."""
+    name = workflow.get("name", "Unnamed Workflow")
+    description = workflow.get("description", "")
+
+    parts = [
+        f"Execute the remaining steps for workflow: **{name}**",
+        f"_{description}_" if description else "",
+        "",
+        "## Already completed (outputs available)",
+    ]
+    for sid, output in session.outputs.items():
+        preview = output[:200].replace("\n", " ")
+        parts.append(f"- `${sid}`: {preview}...")
+
+    parts.extend(["", "## Remaining steps", ""])
+
+    for i, step in enumerate(deferred_steps):
+        sid = step["id"]
+        stype = step.get("type", "subagent")
+        name_s = step.get("name", sid)
+        parts.append(f"### {i + 1}. {name_s} (`{sid}`, type={stype})")
+
+        if stype == "subagent":
+            ctx = step.get("_resolved_context", step.get("context", ""))
+            toolsets = step.get("toolsets", ["terminal", "file"])
+            parts.append(f"Delegate with toolsets={toolsets}:")
+            parts.append(f"```\n{ctx}\n```")
+        elif stype == "skill":
+            skill_name = step.get("skill", "")
+            parts.append(
+                f"Load skill: `{skill_name}` and execute with "
+                f"input: {step.get('input', {})}"
+            )
+
+        parts.append("")
+
+    parts.append("Execute these steps in order using your delegation tool.")
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# File operations
+# ---------------------------------------------------------------------------
+
+
+def load_workflow(path: str) -> dict:
+    """Load and parse a workflow YAML file."""
+    with open(os.path.expanduser(path), "r") as f:
+        data = yaml.safe_load(f)
+
+    errors = validate_workflow(data)
+    if errors:
+        raise ValueError(f"Invalid workflow:\n" + "\n".join(f"  - {e}" for e in errors))
+
+    return data
+
+
+def list_workflows(workflows_dir: str = None) -> List[dict]:
+    """List all workflow YAML files in the workflows directory."""
+    wdir = Path(os.path.expanduser(workflows_dir or WORKFLOWS_DIR))
+    if not wdir.exists():
+        return []
+
+    workflows = []
+    for f in sorted(wdir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(f.read_text())
+            steps_count = len(data.get("steps", []))
+            workflows.append(
+                {
+                    "name": data.get("name", f.stem),
+                    "description": data.get("description", ""),
+                    "file": str(f),
+                    "filename": f.name,
+                    "steps": steps_count,
+                }
+            )
+        except Exception:
+            workflows.append(
+                {
+                    "name": f.stem,
+                    "description": "(parse error)",
+                    "file": str(f),
+                    "filename": f.name,
+                    "steps": 0,
+                }
+            )
+
+    return workflows
+
+
+def record_run(
+    workflow_name: str,
+    success: bool,
+    local_steps: int = 0,
+    deferred_steps: int = 0,
+    error: str = "",
+    history_file: str = None,
+) -> None:
+    """Record a workflow run to history for analytics."""
+    import json
+    from datetime import datetime, timezone
+
+    hist = history_file or os.path.join(
+        os.path.dirname(WORKFLOWS_DIR), "workflows", ".run_history.jsonl"
+    )
+    os.makedirs(os.path.dirname(hist), exist_ok=True)
+
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "workflow": workflow_name,
+        "success": success,
+        "local_steps": local_steps,
+        "deferred_steps": deferred_steps,
+        "error": error,
+    }
+    with open(hist, "a") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
