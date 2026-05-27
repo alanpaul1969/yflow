@@ -8,23 +8,29 @@ Define multi-agent workflows in YAML. Run them anywhere. No Docker, no servers, 
 
 AI agent platforms are powerful but heavyweight — dozens of dependencies, daemons, Docker, and vendor lock-in. yflow is different:
 
-| Feature | yflow | Claude Code | awf | AutoTeam | Animus | AQM |
-|---------|-------|-------------|-----|----------|--------|-----|
-| Dependencies | 1 (PyYAML) | Node.js + 200+ pkgs | 20+ | 30+ | 15+ | 25+ |
+| Feature | yflow | Claude Code Workflow | awf | AutoTeam | Animus | AQM |
+|---------|-------|----------------------|-----|----------|--------|-----|
+| Dependencies | 1 (PyYAML) | Node.js + Anthropic API | 20+ | 30+ | 15+ | 25+ |
 | Daemon required | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Docker required | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ |
-| Provider-agnostic | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
-| Native command exec | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Variable passing | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| Provider-agnostic | ✅ | ❌ (Anthropic-only) | ✅ | ❌ | ✅ | ❌ |
+| Definition format | YAML (~20 lines) | Generated code (300+ lines) | YAML | Python DSL | YAML | YAML |
+| Variable passing | ✅ `$step-id.output` | ❌ | ✅ | ❌ | ❌ | ❌ |
 | Sub-workflows | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Template system | ✅ | ~ (CLAUDE.md) | ❌ | ❌ | ❌ | ❌ |
+| Template system | ✅ auto-classify | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Persistence | Permanent | 3-day auto-delete | Permanent | Permanent | Permanent | Permanent |
 
-### yflow vs Claude Code
+### yflow vs Claude Code Workflow
 
-Claude Code is a **coding agent** — great for single-session code tasks.
-yflow is a **workflow orchestrator** — define multi-step, multi-agent pipelines that span sessions and tools.
+Claude Code added a Workflow feature in v2.1.47 (`/workflow`, `--ultraworkflow`) — a major step forward for multi-agent orchestration. But it's a different design philosophy:
 
-They're complementary: use yflow to define the pipeline, and Claude Code (or any agent) as one of the executors.
+**Definition format:** Claude Code generates 300+ line code scripts. yflow uses declarative YAML (~20 lines). Same power, less ceremony.
+
+**Vendor lock-in:** Claude Code Workflow requires Node.js + an Anthropic API key. yflow is pure Python with one dependency (PyYAML). Use any LLM provider.
+
+**Persistence:** Claude Code Workflow scripts auto-delete after 3 days (unless manually saved to `~/.claude/workflows/`). yflow workflows are permanent files you control.
+
+**Complementary, not competing.** Claude Code Workflow excels at Anthropic-native, single-session coding pipelines. yflow excels at cross-provider, persistent, multi-tool orchestration. Use yflow to define the pipeline, and Claude Code (or any agent) as one of the executors.
 
 ## Install
 
