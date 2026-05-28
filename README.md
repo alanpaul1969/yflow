@@ -40,15 +40,29 @@ pip install yflow
 
 That's it. No Docker, no daemon, no API keys. Just `yflow` on your PATH.
 
-## Quick Start
-
-### 0. One-time setup
+## yflow init — Interactive Setup
 
 ```bash
 yflow init
 ```
 
-Interactive wizard — picks your default subagent provider, model, and workflows directory. Creates `~/.config/yflow/config.yaml`.
+Launches a 4-question wizard:
+
+| Question | Options | Default |
+|----------|---------|---------|
+| Subagent provider | hermes, claude-code, opencode, reasonix | `reasonix` |
+| Default model | deepseek-v4-flash, deepseek-v4-pro, local | `deepseek-v4-flash` |
+| GitHub token | (optional) | — |
+| Workflows directory | any path | `~/.config/yflow/workflows` |
+
+Creates:
+
+- `~/.config/yflow/config.yaml` — your defaults (provider, model, paths)
+- `~/.config/yflow/workflows/hello-world.yaml` — an example workflow to get started
+
+Re-run any time to change your configuration.
+
+## Quick Start
 
 ### 1. Create a workflow
 
