@@ -171,16 +171,62 @@ class TestExecuteWorkflow:
         assert "second" in result["local_outputs"]
         assert "step1-output" in result["local_outputs"]["second"]
 
-    def test_deferred_subagent(self):
+    def test_subagent_provider_hermes_still_deferred(self):
+        """provider: hermes preserves backward-compat defer-to-external behavior."""
         workflow = {
             "name": "test",
             "steps": [
-                {"id": "s1", "type": "subagent", "context": "Do something"},
+                {"id": "s1", "type": "subagent", "provider": "hermes",
+                 "context": "Do something via hermes"},
             ],
         }
         result = execute_workflow(workflow)
         assert len(result["deferred_steps"]) == 1
+        assert result["deferred_steps"][0]["id"] == "s1"
         assert result["prompt"] != ""
+
+    def test_subagent_defaults_to_reasonix_acp(self, monkeypatch):
+        """subagent without provider attribute routes to reasonix ACP (not deferred)."""
+        # Patch execute_reasonix_acp_step so it doesn't need reasonix CLI installed
+        def fake_acp(step, session):
+            session.capture(step["id"], "reasonix-acp-output")
+            return "reasonix-acp-output"
+
+        monkeypatch.setattr(
+            "yflow.engine.execute_reasonix_acp_step", fake_acp
+        )
+        workflow = {
+            "name": "test",
+            "steps": [
+                {"id": "s1", "type": "subagent",
+                 "context": "Write a function to parse JSON"},
+            ],
+        }
+        result = execute_workflow(workflow)
+        # Should NOT be deferred — ran natively via reasonix ACP
+        assert len(result["deferred_steps"]) == 0
+        assert "s1" in result["local_outputs"]
+        assert result["local_outputs"]["s1"] == "reasonix-acp-output"
+
+    def test_subagent_explicit_reasonix_provider(self, monkeypatch):
+        """Explicit provider: reasonix also routes to reasonix ACP."""
+        def fake_acp(step, session):
+            session.capture(step["id"], "explicit-reasonix-output")
+            return "explicit-reasonix-output"
+
+        monkeypatch.setattr(
+            "yflow.engine.execute_reasonix_acp_step", fake_acp
+        )
+        workflow = {
+            "name": "test",
+            "steps": [
+                {"id": "s1", "type": "subagent", "provider": "reasonix",
+                 "context": "Refactor the auth module"},
+            ],
+        }
+        result = execute_workflow(workflow)
+        assert len(result["deferred_steps"]) == 0
+        assert result["local_outputs"]["s1"] == "explicit-reasonix-output"
 
     def test_no_steps(self):
         workflow = {"name": "empty", "steps": []}

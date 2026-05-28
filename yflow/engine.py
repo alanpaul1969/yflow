@@ -290,6 +290,36 @@ print("".join(text_parts))
     return output
 
 
+def execute_reasonix_acp_step(step: dict, session: WorkflowSession) -> str:
+    """Run a subagent step via Reasonix ACP (coding agent with auto escalation).
+
+    Uses ``reasonix acp --yolo`` for headless coding agent mode.
+    Default model is 'auto' (flash-first with <<<NEEDS_PRO>>> escalation).
+
+    Required: DEEPSEEK_API_KEY in environment. reasonix CLI installed.
+    """
+    import subprocess as _sp
+
+    prompt = session.resolve(step.get("context", step.get("prompt", "")))
+    model = step.get("model", "auto")
+    workdir = session.resolve(step.get("workdir", step.get("dir", os.getcwd())))
+    effort = step.get("effort", "max")
+    timeout = step.get("timeout", 900)  # 15 min default for coding tasks
+
+    r = _sp.run(
+        ["reasonix", "acp", "--yolo",
+         "--model", model,
+         "--dir", workdir,
+         "--effort", effort,
+         prompt],
+        capture_output=True, text=True, timeout=timeout,
+        env={**os.environ, "HOME": os.path.expanduser("~")},
+    )
+    output = (r.stdout or r.stderr)[:20000]
+    session.capture(step["id"], output)
+    return output
+
+
 def execute_opencode_step(step: dict, session: WorkflowSession) -> str:
     """Run an opencode step locally and capture its output."""
     import subprocess as _sp
@@ -644,8 +674,10 @@ def classify_task(description: str) -> dict:
 def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
     """Execute a workflow natively.
 
-    Runs command/reasonix/opencode/workflow steps locally;
-    defers subagent/skill steps for external execution.
+    Runs command/reasonix/opencode/workflow/gbrain steps locally.
+    Subagent steps default to reasonix ACP (coding agent); use
+    ``provider: hermes`` to defer them for external execution instead.
+    Skill steps are always deferred.
 
     Returns:
         {"local_outputs": {step_id: output},
@@ -684,8 +716,15 @@ def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
                 execute_subworkflow_step(step, session, workflows_dir=wdir)
             elif stype == "gbrain":
                 execute_gbrain_step(step, session)
+            elif stype == "subagent":
+                # Default to reasonix ACP.  Hermes provider stays deferred for
+                # backward compatibility with existing delegate_task callers.
+                if step.get("provider", "reasonix") == "hermes":
+                    deferred_steps.append(step)
+                else:
+                    execute_reasonix_acp_step(step, session)
             else:
-                # subagent / skill — defer to external executor
+                # skill — defer to external executor
                 deferred_steps.append(step)
 
     # Build prompt for deferred steps

@@ -77,6 +77,9 @@ def main():
     create_p.add_argument("--from", "-f", dest="template", help="Template name (e.g. backend-bug-fix)")
     create_p.add_argument("--set", "-s", action="append", dest="vars", help="Set variable: key=value")
 
+    # --- init ---
+    subs.add_parser("init", help="Interactive setup wizard — configure yflow defaults")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -94,6 +97,7 @@ def _dispatch(args):
         "show": _cmd_show,
         "validate": _cmd_validate,
         "create": _cmd_create,
+        "init": _cmd_init,
     }
     return handlers.get(args.command, lambda _: _unknown(args.command))(args)
 
@@ -444,6 +448,126 @@ steps:
 
     print(f"   Edit this file to define your workflow steps.")
     print(f"   Run with: yamlflow run {filepath}")
+
+    return 0
+
+
+def _cmd_init(args) -> int:
+    """Interactive setup wizard — configure yflow defaults."""
+
+    CONFIG_DIR = os.path.expanduser("~/.config/yflow")
+    CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
+    WF_DIR_DEFAULT = os.path.join(CONFIG_DIR, "workflows")
+
+    print()
+    print("╔══════════════════════════════════════════╗")
+    print("║       yflow — Interactive Setup          ║")
+    print("╚══════════════════════════════════════════╝")
+    print()
+    print("Configure your default subagent and workflow settings.")
+    print("Press Enter to accept the [default] shown in brackets.")
+    print()
+
+    # --- Question 1: Subagent provider ---
+    print("1. Default subagent provider:")
+    print("   Options: hermes, claude-code, opencode, reasonix")
+    provider = input("   Provider [reasonix]: ").strip()
+    if not provider:
+        provider = "reasonix"
+    elif provider not in ("hermes", "claude-code", "opencode", "reasonix"):
+        print(f"   ⚠ '{provider}' not recognized — using 'reasonix'")
+        provider = "reasonix"
+
+    # --- Question 2: Default model ---
+    print()
+    print("2. Default model for subagent:")
+    print("   Options: deepseek-v4-flash, deepseek-v4-pro, local")
+    model = input("   Model [deepseek-v4-flash]: ").strip()
+    if not model:
+        model = "deepseek-v4-flash"
+    elif model not in ("deepseek-v4-flash", "deepseek-v4-pro", "local"):
+        print(f"   ⚠ '{model}' not recognized — using 'deepseek-v4-flash'")
+        model = "deepseek-v4-flash"
+
+    # --- Question 3: GitHub token (optional) ---
+    print()
+    print("3. GitHub token (optional — for private repos and higher rate limits)")
+    gh_token = input("   Token []: ").strip()
+
+    # --- Question 4: Workflows directory ---
+    print()
+    print("4. Workflows directory:")
+    print(f"   Where workflow YAML files are stored.")
+    wf_dir = input(f"   Directory [{WF_DIR_DEFAULT}]: ").strip()
+    if not wf_dir:
+        wf_dir = WF_DIR_DEFAULT
+    wf_dir = os.path.expanduser(wf_dir)
+
+    # --- Create directories ---
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    os.makedirs(wf_dir, exist_ok=True)
+
+    # --- Write config.yaml ---
+    config_yaml = (
+        f"# yflow configuration\n"
+        f"defaults:\n"
+        f"  subagent:\n"
+        f"    provider: {provider}\n"
+        f"    model: {model}\n"
+        f"  workflows_dir: {wf_dir}\n"
+    )
+    with open(CONFIG_PATH, "w") as f:
+        f.write(config_yaml)
+
+    # --- Write hello-world.yaml example ---
+    hello_path = os.path.join(wf_dir, "hello-world.yaml")
+    hello_content = """# Hello yflow — your first workflow
+name: "Hello yflow"
+description: "Demonstrates command execution, variable passing, and sub-workflows"
+version: "1.0"
+
+steps:
+  - id: greet
+    name: "Say hello"
+    type: command
+    command: "echo 'Hello from yflow!'"
+
+  - id: verify
+    name: "Verify greeting was captured"
+    type: command
+    command: "echo 'Previous step output: $greet.output'"
+    depends_on: greet
+
+  - id: summary
+    name: "Final summary"
+    type: command
+    command: "echo 'All done! Steps completed: greet → verify → summary'"
+    depends_on: verify
+"""
+    if not os.path.exists(hello_path):
+        with open(hello_path, "w") as f:
+            f.write(hello_content)
+
+    # --- Summary ---
+    print()
+    print("╔══════════════════════════════════════════╗")
+    print("║           Configuration Summary          ║")
+    print("╚══════════════════════════════════════════╝")
+    print()
+    print(f"  Subagent provider:   {provider}")
+    print(f"  Subagent model:      {model}")
+    print(f"  Workflows dir:       {wf_dir}")
+    if gh_token:
+        print(f"  GitHub token:        {'*' * 8} (set)")
+    print()
+    print(f"  Config written to:   {CONFIG_PATH}")
+    print(f"  Example workflow:    {hello_path}")
+    print()
+    print("  Try it out:")
+    print(f"    yamlflow list")
+    print(f"    yamlflow run hello-world")
+    print(f"    yamlflow validate hello-world")
+    print()
 
     return 0
 
