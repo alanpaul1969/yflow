@@ -42,6 +42,14 @@ That's it. No Docker, no daemon, no API keys. Just `yflow` on your PATH.
 
 ## Quick Start
 
+### 0. One-time setup
+
+```bash
+yflow init
+```
+
+Interactive wizard — picks your default subagent provider, model, and workflows directory. Creates `~/.config/yflow/config.yaml`.
+
 ### 1. Create a workflow
 
 ```bash
@@ -81,15 +89,50 @@ yflow run hello-world --native
 
 ## Step Types
 
-| Type | Description | Needs external agent? |
-|------|-------------|-----------------------|
-| `command` | Shell command (native execution) | No |
-| `reasonix` | One-shot reasoning / coding agent | Yes (reasonix CLI) |
-| `opencode` | Coding agent | Yes (opencode CLI) |
-| `gbrain` | Knowledge memory query/store | Optional (gbrain CLI) |
-| `subagent` | Delegated AI task | Yes |
-| `skill` | Reusable skill/capability | Yes |
-| `workflow` | Reference another workflow | No |
+| Type | Description | Default provider |
+|------|-------------|------------------|
+| `command` | Shell command (native execution) | — |
+| `reasonix` | One-shot reasoning / coding agent | Reasonix CLI |
+| `opencode` | Coding agent | OpenCode CLI |
+| `gbrain` | Knowledge memory query/store | gbrain CLI |
+| `subagent` | Delegated AI task | **Reasonix ACP** (v0.2.1+) |
+| `skill` | Reusable skill/capability | External executor |
+| `workflow` | Reference another workflow | — |
+
+### subagent — Reasonix ACP (default since v0.2.1)
+
+Subagent steps now default to **Reasonix ACP** — a headless coding agent with auto flash→pro escalation:
+
+```yaml
+- id: refactor_auth
+  type: subagent
+  context: "Refactor the authentication module to use async/await"
+  workdir: /home/user/project
+  model: auto        # default: flash→pro on hard turns
+  effort: max
+  timeout: 900
+```
+
+**Auto escalation:** When the model detects a task exceeds flash capacity, it emits `<<<NEEDS_PRO>>>` and Reasonix auto-retries on v4-pro. No manual model switching needed.
+
+**Backward compat:** Set `provider: hermes` to use the pre-0.2.1 delegate_task behavior:
+
+```yaml
+- id: legacy_task
+  type: subagent
+  provider: hermes   # uses external executor (Hermes delegate_task)
+  context: "Fix all the things"
+```
+
+Fields for subagent steps:
+- `context` / `prompt` — task description
+- `model` — `auto` (default, flash-first), `flash`, or `pro`
+- `workdir` / `dir` — working directory (default: cwd)
+- `effort` — `low` | `medium` | `high` | `max` (default: `max`)
+- `timeout` — seconds (default: 900)
+- `provider` — `reasonix` (default) or `hermes` (legacy)
+
+Requires [Reasonix CLI](https://github.com/esengine/DeepSeek-Reasonix) and `DEEPSEEK_API_KEY` in environment.
 
 ### gbrain — Optional Knowledge Memory
 
@@ -138,7 +181,7 @@ Set `GBRAIN_BIN` env var if gbrain is not on `$PATH`. yflow auto-detects `~/.loc
 
 ### reasonix — DeepSeek-Native Agent (Run + Code)
 
-yflow integrates with [Reasonix](https://github.com/usewhale/reasonix), a DeepSeek-native agent framework with 91%+ cache hit rates. Two modes:
+yflow integrates with [Reasonix](https://github.com/esengine/DeepSeek-Reasonix), a DeepSeek-native agent framework with 99.82% cache hit rates in real-world use. Two modes:
 
 **Run mode (default):** Read-only analysis, ultra-cheap (~$0.00003 per call):
 
@@ -146,7 +189,7 @@ yflow integrates with [Reasonix](https://github.com/usewhale/reasonix), a DeepSe
 - id: analyze
   type: reasonix
   prompt: "Review this code for security issues"
-  model: flash  # flash or pro (default: flash)
+  model: auto     # auto / flash / pro (default: auto)
 ```
 
 **ACP mode:** Full coding agent — read, write, edit files, run terminal commands:
@@ -157,18 +200,20 @@ yflow integrates with [Reasonix](https://github.com/usewhale/reasonix), a DeepSe
   mode: acp
   prompt: "Fix the race condition in worker.py"
   workdir: /home/user/project
-  model: flash
+  model: auto
   timeout: 600
 ```
+
+The `auto` model preset starts on flash and auto-escalates to pro when the model self-reports `<<<NEEDS_PRO>>>` — keeping costs low on easy turns while getting pro reasoning for hard tasks.
 
 Fields for reasonix steps:
 - `prompt` — task description
 - `mode` — `run` (default, read-only) or `acp` (coding with filesystem access)
-- `model` — `flash` (default) or `pro`
+- `model` — `auto` (default, flash→pro), `flash`, or `pro`
 - `workdir` — working directory for acp mode (default: cwd)
 - `timeout` — seconds (default: 300 run / 600 acp)
 
-Requires [Reasonix CLI](https://github.com/usewhale/reasonix) and `DEEPSEEK_API_KEY` in environment.
+Requires [Reasonix CLI](https://github.com/esengine/DeepSeek-Reasonix) and `DEEPSEEK_API_KEY` in environment.
 
 ## Variable Passing
 
