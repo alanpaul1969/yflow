@@ -265,6 +265,66 @@ yflow run my-pipeline --exec
 
 Or use with any agent that can consume a prompt string.
 
+## Roadmap
+
+yflow follows a 10-phase roadmap. Completed phases ship in the Hermes workflow plugin first, then propagate to the standalone `yflow` package.
+
+### Phase 1: Foundation ✅
+
+| # | Feature | Status |
+|---|---------|--------|
+| P1 | `--from` template instantiation (`yflow create --from backend-bug-fix`) | ✅ |
+| P2 | Native orchestration — engine directly spawns subagent steps (Reasonix ACP) | ✅ |
+| P3 | `$step.output` variable passing between steps | ✅ |
+| P4 | Sub-workflow — `type: workflow` recursive execution | ✅ |
+| P5 | Task classifier — `classify_task()` auto-selects template | ✅ |
+
+### Phase 2: Ecosystem ✅
+
+| # | Feature | Status |
+|---|---------|--------|
+| P6 | Cron integration — `hermes cron create --workflow` | ✅ |
+| P7 | Webhook → Workflow — GitHub push/PR/issue triggers workflow | ✅ |
+| P8 | Marketplace — `community/` directory with shareable workflow YAMLs | ✅ |
+| P10 | Analytics — `hermes workflow stats` with run history | ✅ |
+
+### Phase 3: Future
+
+| # | Feature | Status |
+|---|---------|--------|
+| P9 | Visual Builder — drag-and-drop workflow editor (TUI → Web) | 🔮 |
+
+### Marketplace
+
+Shareable workflows live in `~/.hermes/workflows/community/`:
+
+| Workflow | Type | Description |
+|----------|------|-------------|
+| `system-health-check` | Monitoring | Daily disk, memory, bridge endpoint liveness |
+| `alaya-build` | CI/CD | Flutter APK build pipeline: audit → build → ship |
+| `pre-commit-review` | Code Review | Pre-commit gate with auto-fix + [verified] commit |
+| `branch-review` | Code Review | Pre-merge: diff analysis + churn + conflict check |
+
+```bash
+hermes workflow run community/system-health-check --native
+```
+
+### Webhook
+
+GitHub events trigger workflows automatically:
+
+```bash
+hermes workflow webhook --port 9001
+```
+
+| GitHub Event | → Workflow |
+|-------------|-----------|
+| `push` | `codebase-audit` |
+| `pull_request` | `pre-commit-review` |
+| `issues` | `branch-review` |
+
+Configure routes in `~/.hermes/workflows/webhook.yaml`.
+
 ## Learn More
 
 - [Examples](./examples/)
