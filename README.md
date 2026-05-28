@@ -269,6 +269,8 @@ Or use with any agent that can consume a prompt string.
 
 yflow follows a 10-phase roadmap. Completed phases ship in the Hermes workflow plugin first, then propagate to the standalone `yflow` package.
 
+> **Hermes users:** The full plugin (engine + CLI + webhook + marketplace) lives at **[hermes-workflows](https://github.com/alanpaul1969/hermes-workflows)**. Install it alongside Hermes Agent for the native `/workflow` slash command, `hermes workflow webhook`, and `hermes workflow stats`.
+
 ### Phase 1: Foundation ✅
 
 | # | Feature | Status |
