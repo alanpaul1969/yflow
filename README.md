@@ -143,7 +143,7 @@ Fields for subagent steps:
 - `context` / `prompt` — task description
 - `model` — `auto` (default, flash-first), `flash`, or `pro`
 - `workdir` / `dir` — working directory (default: cwd)
-- `effort` — `low` | `medium` | `high` | `max` (default: `max`)
+- `effort` — `low` | `medium` | `high` | `max` (default: `high` — matching Claude Opus 4.8)
 - `timeout` — seconds (default: 900)
 - `provider` — `reasonix` (default) or `hermes` (legacy)
 
@@ -274,12 +274,76 @@ steps:
 
 Fields for kanban steps:
 - `goal` (required) — the task goal
-- `workers` — list of `{profile, skills}` (default: 3 auto-assigned: investigator, fixer, tester)
+- `workers` — list of `{profile, skills, effort}` (default: 3 auto-assigned)
 - `verifier` — verifier assignee (default: `code-reviewer`)
 - `synthesizer` — synthesizer assignee (default: `architect`)
+- `effort` — default effort for all workers: `low` | `medium` | `high` | `max` (default: `high`)
 - `timeout` — seconds (default: 600)
+- `verify` — verification gate (optional):
+  - `gate` — `normal` | `strict` | `off` (default: `normal`)
+  - `checks` — list of `[lint, test, self-review, type-check]`
 
 Requires [Hermes Agent](https://github.com/NousResearch/hermes-agent) v0.15.0+ with Kanban Swarm.
+
+### Effort Control — Per-Step Cost Optimization
+
+yflow v0.4.0 introduces **per-step effort control** across all agent step types. Inspired by Claude Opus 4.8's effort parameter, you can now dial quality vs cost per step:
+
+```yaml
+steps:
+  # Quick fix — cheap, low effort
+  - id: fix_typo
+    type: subagent
+    context: "Fix the typo in README.md"
+    effort: low          # ~$0.0003
+
+  # Standard task — balanced (default)
+  - id: refactor_module
+    type: subagent
+    context: "Refactor auth module to async/await"
+    effort: high         # ~$0.001 — DEFAULT since v0.4.0
+
+  # Critical security audit — maximum reasoning
+  - id: security_audit
+    type: kanban
+    goal: "Audit entire auth module for vulnerabilities"
+    effort: max          # ~$0.007 — full reasoning budget
+    verify:
+      gate: strict
+      checks: [lint, test, type-check]
+```
+
+**Effort levels and cost:**
+
+| Effort | Use case | Approx cost/subagent | Default? |
+|--------|----------|---------------------|----------|
+| `low` | Typo fixes, simple searches | ~$0.0003 | |
+| `medium` | Small refactors, doc updates | ~$0.0005 | |
+| `high` | Standard coding, debugging | ~$0.001 | ✅ (v0.4.0+) |
+| `max` | Security audits, complex migrations | ~$0.003 | (was v0.3.0) |
+
+Changing default from `max` → `high` saves ~67% on routine coding tasks while still providing strong reasoning for complex work. Set `effort: max` on critical steps that need it.
+
+### Verify Gate — Quality Assurance
+
+Kanban swarm steps now support a **verification gate** that controls how strictly the verifier gates worker outputs:
+
+```yaml
+- id: critical_fix
+  type: kanban
+  goal: "Fix the race condition in payment processing"
+  verify:
+    gate: strict        # strict | normal | off
+    checks: [lint, test, self-review]
+```
+
+| Gate | Behavior |
+|------|----------|
+| `strict` | Verifier MUST run specified checks. Rejects if ANY check fails. No passing without evidence. |
+| `normal` | Standard verification — reviews outputs but doesn't require formal checks. (default) |
+| `off` | Auto-pass — verifier skips gate entirely. Use for exploratory work where verification is unnecessary. |
+
+When `gate: strict` with `checks: [lint, test]`, the verifier will run linter and tests before accepting any worker's output. This mirrors Claude Opus 4.8's 4x improvement in catching flawed code before it reaches the user.
 
 ## Variable Passing
 

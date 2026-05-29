@@ -298,6 +298,8 @@ def execute_reasonix_acp_step(step: dict, session: WorkflowSession) -> str:
 
     Uses ``reasonix acp --yolo`` for headless coding agent mode.
     Default model is 'auto' (flash-first with <<<NEEDS_PRO>>> escalation).
+    Effort defaults to 'high' (matching Claude Opus 4.8 convention).
+    Set 'max' for critical tasks, 'medium' for quick fixes.
 
     Required: DEEPSEEK_API_KEY in environment. reasonix CLI installed.
     """
@@ -306,7 +308,7 @@ def execute_reasonix_acp_step(step: dict, session: WorkflowSession) -> str:
     prompt = session.resolve(step.get("context", step.get("prompt", "")))
     model = step.get("model", "auto")
     workdir = session.resolve(step.get("workdir", step.get("dir", os.getcwd())))
-    effort = step.get("effort", "max")
+    effort = step.get("effort", "high")  # default high (Opus 4.8 convention)
     timeout = step.get("timeout", 900)  # 15 min default for coding tasks
 
     r = _sp.run(
@@ -439,9 +441,16 @@ def execute_kanban_step(step: dict, session: WorkflowSession) -> str:
     YAML fields:
         goal: str (required) — the task goal
         workers: list[dict] — specialist profiles (default: 3 auto-assigned)
+          - profile: str — kanban assignee (e.g. "debugger", "architect")
+          - skills: list[str] — kanban skill names
+          - effort: str — per-worker effort (low|medium|high|max, default: high)
         verifier: str — verifier assignee (default: "code-reviewer")
         synthesizer: str — synthesizer assignee (default: "architect")
+        effort: str — default effort for all workers (low|medium|high|max, default: high)
         timeout: int — max seconds to wait (default: 600)
+        verify: dict — verification gate (optional)
+          gate: str — strict|normal|off (default: normal)
+          checks: list[str] — extra checks (lint, test, self-review, type-check)
     """
     import shutil as _shutil
     import json as _json
@@ -460,6 +469,20 @@ def execute_kanban_step(step: dict, session: WorkflowSession) -> str:
     verifier_assignee = step.get("verifier", "code-reviewer")
     synthesizer_assignee = step.get("synthesizer", "architect")
     timeout = step.get("timeout", 600)
+    default_effort = step.get("effort", "high")
+    verify_cfg = step.get("verify", {})
+    verify_gate = verify_cfg.get("gate", "normal")
+    verify_checks = verify_cfg.get("checks", [])
+
+    # Build verify gate instructions
+    verify_extra = ""
+    if verify_gate == "strict":
+        verify_extra = " STRICT GATE: "
+        if verify_checks:
+            verify_extra += f"Must run and pass: {', '.join(verify_checks)}. "
+        verify_extra += "Reject if ANY check fails. Do not pass without evidence."
+    elif verify_gate == "off":
+        verify_extra = " [GATE OFF — auto-pass]"
 
     worker_args: list[str] = []
     if workers_cfg:
@@ -467,6 +490,10 @@ def execute_kanban_step(step: dict, session: WorkflowSession) -> str:
             profile = w.get("profile", "default")
             title = w.get("title", f"{profile} worker: {goal[:60]}")
             skills = ",".join(w.get("skills", []))
+            worker_effort = w.get("effort", default_effort)
+            # Embed effort hint in title for the worker to see
+            if worker_effort != "high":
+                title = f"[{worker_effort}] {title}"
             if skills:
                 worker_args.extend(["--worker", f"{profile}:{title}:{skills}"])
             else:
@@ -481,7 +508,7 @@ def execute_kanban_step(step: dict, session: WorkflowSession) -> str:
     try:
         r = _sp.run(
             [hermes_bin, "kanban", "swarm",
-             "--goal", goal,
+             "--goal", goal + verify_extra,
              "--verifier", verifier_assignee,
              "--synthesizer", synthesizer_assignee,
              "--json"] + worker_args,
