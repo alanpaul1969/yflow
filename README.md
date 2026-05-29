@@ -112,6 +112,7 @@ yflow run hello-world --native
 | `subagent` | Delegated AI task | **Reasonix ACP** (v0.2.1+) |
 | `skill` | Reusable skill/capability | External executor |
 | `workflow` | Reference another workflow | — |
+| `kanban` | Auto-decompose → parallel swarm → verify → synthesize | Hermes Kanban Swarm |
 
 ### subagent — Reasonix ACP (default since v0.2.1)
 
@@ -228,6 +229,57 @@ Fields for reasonix steps:
 - `timeout` — seconds (default: 300 run / 600 acp)
 
 Requires [Reasonix CLI](https://github.com/esengine/DeepSeek-Reasonix) and `DEEPSEEK_API_KEY` in environment.
+
+### kanban — Auto-Decompose with Hermes Kanban Swarm
+
+yflow now integrates with **Hermes Kanban Swarm** — the most powerful step type for tasks you can't decompose upfront. Instead of manually figuring out sub-steps, let the swarm do it:
+
+```yaml
+steps:
+  - id: debug_websocket
+    type: kanban
+    goal: "Debug why WebSocket disconnects on Android after 30 seconds"
+    workers:
+      - profile: debugger
+        skills: [systematic-debugging, flutter-pitfalls]
+      - profile: architect
+        skills: [flutter-backend-integration]
+    verifier: code-reviewer
+    synthesizer: architect
+    timeout: 600
+```
+
+**How it works:** `type: kanban` spawns a 5-agent pipeline:
+1. **Planning root** — auto-decomposes the goal into sub-tasks
+2. **Parallel workers** — each specialist attacks a sub-task simultaneously
+3. **Verifier** — gates results: pass or request rework
+4. **Synthesizer** — merges verified outputs into a single deliverable
+
+**Why this beats pure Kanban:**
+
+| | Pure Kanban CLI | yflow `type: kanban` |
+|---|---|---|
+| Setup | `hermes kanban swarm` + `hermes kanban dispatch` — manual | One YAML line, integrated into your pipeline |
+| Variable passing | Manual blackboard reads | `$step-id.output` between steps |
+| Error handling | Manual monitoring | Auto-timeout + fallback to next step |
+| Composite pipelines | Can't chain with other step types | Mix with `command`, `reasonix`, `gbrain` etc. |
+| Pre/post processing | Must script separately | `command` steps before/after the swarm |
+| Reusability | One-off CLI invocation | Templated, parameterized, version-controlled |
+| Context | No cross-workflow awareness | `$previous_step.output` feeds into the goal |
+
+**When to use `type: kanban` vs `type: subagent`:**
+
+- `type: subagent` — you know the exact task. Single agent, one shot. Cheaper, faster.
+- `type: kanban` — you don't know the sub-steps. Let the swarm decompose, explore in parallel, verify, and synthesize. Costs ~$0.01 but saves hours of manual decomposition.
+
+Fields for kanban steps:
+- `goal` (required) — the task goal
+- `workers` — list of `{profile, skills}` (default: 3 auto-assigned: investigator, fixer, tester)
+- `verifier` — verifier assignee (default: `code-reviewer`)
+- `synthesizer` — synthesizer assignee (default: `architect`)
+- `timeout` — seconds (default: 600)
+
+Requires [Hermes Agent](https://github.com/NousResearch/hermes-agent) v0.15.0+ with Kanban Swarm.
 
 ## Variable Passing
 
