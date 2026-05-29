@@ -34,7 +34,7 @@ TEMPLATES_DIR = os.path.join(os.path.dirname(WORKFLOWS_DIR), "workflows", "_temp
 # YAML Schema
 # ---------------------------------------------------------------------------
 
-STEP_TYPES = {"subagent", "skill", "command", "reasonix", "opencode", "workflow", "gbrain"}
+STEP_TYPES = {"subagent", "skill", "command", "reasonix", "opencode", "workflow", "gbrain", "kanban"}
 
 
 def validate_workflow(data: dict) -> List[str]:
@@ -79,6 +79,9 @@ def validate_workflow(data: dict) -> List[str]:
 
         if stype == "command" and "command" not in step:
             errors.append(f"{prefix}: type=command requires 'command' field")
+
+        if stype == "kanban" and "goal" not in step:
+            errors.append(f"{prefix}: type=kanban requires 'goal' field")
 
         if stype == "gbrain" and "action" not in step:
             errors.append(f"{prefix}: type=gbrain requires 'action' field (query/search/put/get)")
@@ -426,6 +429,128 @@ def execute_gbrain_step(step: dict, session: WorkflowSession) -> str:
         return msg
 
 
+def execute_kanban_step(step: dict, session: WorkflowSession) -> str:
+    """Execute a kanban swarm step: decompose → parallel workers → verify → synthesize.
+
+    Uses Hermes Kanban Swarm to auto-decompose complex tasks. Requires
+    ``hermes`` CLI on PATH. Best for tasks where you don't know the
+    decomposition ahead of time.
+
+    YAML fields:
+        goal: str (required) — the task goal
+        workers: list[dict] — specialist profiles (default: 3 auto-assigned)
+        verifier: str — verifier assignee (default: "code-reviewer")
+        synthesizer: str — synthesizer assignee (default: "architect")
+        timeout: int — max seconds to wait (default: 600)
+    """
+    import shutil as _shutil
+    import json as _json
+    import subprocess as _sp
+    import time as _time
+
+    # Check hermes is available
+    hermes_bin = os.environ.get("HERMES_BIN") or _shutil.which("hermes")
+    if not hermes_bin:
+        msg = "[kanban] hermes CLI not found — install Hermes Agent for kanban support"
+        session.capture(step["id"], msg)
+        return msg
+
+    goal = session.resolve(step["goal"])
+    workers_cfg = step.get("workers", [])
+    verifier_assignee = step.get("verifier", "code-reviewer")
+    synthesizer_assignee = step.get("synthesizer", "architect")
+    timeout = step.get("timeout", 600)
+
+    worker_args: list[str] = []
+    if workers_cfg:
+        for w in workers_cfg:
+            profile = w.get("profile", "default")
+            title = w.get("title", f"{profile} worker: {goal[:60]}")
+            skills = ",".join(w.get("skills", []))
+            if skills:
+                worker_args.extend(["--worker", f"{profile}:{title}:{skills}"])
+            else:
+                worker_args.extend(["--worker", f"{profile}:{title}"])
+    else:
+        worker_args.extend([
+            "--worker", f"investigator:Investigate: {goal[:50]}",
+            "--worker", f"fixer:Fix: {goal[:50]}",
+            "--worker", f"tester:Test: {goal[:50]}",
+        ])
+
+    try:
+        r = _sp.run(
+            [hermes_bin, "kanban", "swarm",
+             "--goal", goal,
+             "--verifier", verifier_assignee,
+             "--synthesizer", synthesizer_assignee,
+             "--json"] + worker_args,
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "HOME": os.path.expanduser("~")},
+        )
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr or r.stdout)
+    except Exception as e:
+        msg = f"[kanban] swarm creation failed: {e}"
+        session.capture(step["id"], msg)
+        return msg
+
+    try:
+        swarm_info = _json.loads(r.stdout.strip())
+    except _json.JSONDecodeError:
+        swarm_info = {"raw": r.stdout.strip()}
+
+    worker_ids = swarm_info.get("worker_ids", [])
+    if isinstance(worker_ids, str):
+        worker_ids = [worker_ids]
+    root_id = swarm_info.get("root_id", "unknown")
+
+    # Dispatch
+    _sp.run(
+        [hermes_bin, "kanban", "dispatch", "--once", "--max", str(len(worker_ids) + 2)],
+        capture_output=True, text=True, timeout=30,
+        env={**os.environ, "HOME": os.path.expanduser("~")},
+    )
+
+    # Poll
+    start = _time.time()
+    result = ""
+    pending: list = []
+    while _time.time() - start < timeout:
+        r2 = _sp.run(
+            [hermes_bin, "kanban", "list", "--json"],
+            capture_output=True, text=True, timeout=15,
+            env={**os.environ, "HOME": os.path.expanduser("~")},
+        )
+        try:
+            tasks = _json.loads(r2.stdout) if r2.stdout.strip() else []
+        except _json.JSONDecodeError:
+            tasks = []
+
+        if not isinstance(tasks, list):
+            tasks = []
+
+        swarm_tasks = [t for t in tasks if t.get("id") in (worker_ids + [root_id])]
+        pending = [t for t in swarm_tasks if t.get("status") not in ("done", "archived")]
+
+        if not pending:
+            results = []
+            for t in swarm_tasks:
+                rid = t.get("result", "") or ""
+                if rid:
+                    results.append(f"[{t.get('id', '?')}] {rid[:500]}")
+            result = "\n".join(results) if results else "Kanban swarm: all tasks completed"
+            break
+
+        _time.sleep(5)
+
+    if not result:
+        result = f"Kanban swarm: timed out after {timeout}s (pending: {len(pending)})"
+
+    session.capture(step["id"], result)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Dependency resolver
 # ---------------------------------------------------------------------------
@@ -716,6 +841,8 @@ def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
                 execute_subworkflow_step(step, session, workflows_dir=wdir)
             elif stype == "gbrain":
                 execute_gbrain_step(step, session)
+            elif stype == "kanban":
+                execute_kanban_step(step, session)
             elif stype == "subagent":
                 # Default to reasonix ACP.  Hermes provider stays deferred for
                 # backward compatibility with existing delegate_task callers.
