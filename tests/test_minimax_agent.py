@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -152,6 +153,98 @@ class TestRunStep(unittest.TestCase):
             self.assertIn("Cold memory (auto-injected from yflow memory)", prompt)
             self.assertIn("[missing: nonexistent-slug not found in memory]", prompt)
             self.assertIn("real task", prompt)
+
+
+class TestCallMinimaxErrors(unittest.TestCase):
+    """Negative paths for call_minimax — error handling, validation."""
+
+    def setUp(self):
+        self.api_key = "test-key-placeholder"
+        os.environ["YFLOW_ALLOW_CUSTOM_BASE_URL"] = ""  # tight default
+
+    def tearDown(self):
+        os.environ.pop("YFLOW_ALLOW_CUSTOM_BASE_URL", None)
+
+    def test_missing_api_key_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            call_minimax("hi", api_key=None, base_url="https://api.minimax.io/v1")
+        self.assertIn("API key", str(ctx.exception))
+
+    def test_disallowed_base_url_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            call_minimax("hi", api_key=self.api_key, base_url="https://evil.example.com/v1")
+        self.assertIn("allowlist", str(ctx.exception))
+
+    def test_disallowed_base_url_can_be_opted_in(self):
+        os.environ["YFLOW_ALLOW_CUSTOM_BASE_URL"] = "1"
+        with patch("yflow.agents.minimax.urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps({
+                "choices": [{"message": {"content": "ok"}}]
+            }).encode("utf-8")
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = lambda s, *a: False
+            mock_urlopen.return_value = mock_resp
+            result = call_minimax("hi", api_key=self.api_key, base_url="https://evil.example.com/v1")
+            self.assertEqual(result, "ok")
+
+    def test_http_error_raises_runtime_with_body(self):
+        from email.message import Message
+        with patch("yflow.agents.minimax.urllib.request.urlopen") as mock_urlopen:
+            err = urllib.error.HTTPError(
+                "https://api.minimax.io/v1/chat/completions", 401, "Unauthorized", Message(), None
+            )
+            err.read = MagicMock(return_value=b'{"error": "bad key"}')
+            mock_urlopen.side_effect = err
+            with self.assertRaises(RuntimeError) as ctx:
+                call_minimax("hi", api_key=self.api_key)
+            msg = str(ctx.exception)
+            self.assertIn("401", msg)
+            self.assertIn("Unauthorized", msg)
+            self.assertIn("bad key", msg)
+
+    def test_url_error_raises_runtime(self):
+        with patch("yflow.agents.minimax.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = urllib.error.URLError(
+                ConnectionRefusedError("connection refused")
+            )
+            with self.assertRaises(RuntimeError) as ctx:
+                call_minimax("hi", api_key=self.api_key)
+            self.assertIn("network error", str(ctx.exception))
+            self.assertIn("ConnectionRefusedError", str(ctx.exception))
+
+    def test_non_json_response_raises_runtime(self):
+        with patch("yflow.agents.minimax.urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = b"<html>error</html>"
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = lambda s, *a: False
+            mock_urlopen.return_value = mock_resp
+            with self.assertRaises(RuntimeError) as ctx:
+                call_minimax("hi", api_key=self.api_key)
+            self.assertIn("non-JSON", str(ctx.exception))
+
+    def test_missing_choices_raises_runtime(self):
+        with patch("yflow.agents.minimax.urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps({"error": "rate limited"}).encode("utf-8")
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = lambda s, *a: False
+            mock_urlopen.return_value = mock_resp
+            with self.assertRaises(RuntimeError) as ctx:
+                call_minimax("hi", api_key=self.api_key)
+            self.assertIn("no choices", str(ctx.exception))
+
+    def test_missing_message_key_raises_runtime(self):
+        with patch("yflow.agents.minimax.urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps({"choices": [{"text": "hi"}]}).encode("utf-8")
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = lambda s, *a: False
+            mock_urlopen.return_value = mock_resp
+            with self.assertRaises(RuntimeError) as ctx:
+                call_minimax("hi", api_key=self.api_key)
+            self.assertIn("missing 'message'", str(ctx.exception))
 
 
 if __name__ == "__main__":

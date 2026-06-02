@@ -878,7 +878,10 @@ def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
 
     session = WorkflowSession(variables)
     waves = resolve_execution_order(steps)
-    step_map = {s["id"]: s for s in steps}
+    # Shallow-copy each step dict so engine state (_cold_load, _resolved_*)
+    # doesn't leak back into the caller's workflow. Fixes cross-run
+    # idempotency issue reported in code review.
+    step_map = {s["id"]: dict(s) for s in steps}
     wdir = workflows_dir or WORKFLOWS_DIR
 
     deferred_steps = []

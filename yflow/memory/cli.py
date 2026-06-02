@@ -273,7 +273,6 @@ def register_memory_parser(subparsers) -> argparse.ArgumentParser:
     # search
     p = mem_subs.add_parser("search", parents=[common], help="Search memory (regex)")
     p.add_argument("pattern")
-    p.setDefaults = None  # noqa
     p.set_defaults(func=cmd_search)
 
     # inject
