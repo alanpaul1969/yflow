@@ -76,9 +76,12 @@ def main():
     create_p.add_argument("--description", "-d", default="", help="Workflow description")
     create_p.add_argument("--from", "-f", dest="template", help="Template name (e.g. backend-bug-fix)")
     create_p.add_argument("--set", "-s", action="append", dest="vars", help="Set variable: key=value")
-
     # --- init ---
     subs.add_parser("init", help="Interactive setup wizard — configure yflow defaults")
+
+    # --- memory (v0.5.0) ---
+    from yflow.memory.cli import register_memory_parser
+    register_memory_parser(subs)
 
     args = parser.parse_args()
 
@@ -90,6 +93,11 @@ def main():
 
 
 def _dispatch(args):
+    # Memory subcommand has its own dispatch (sub-subcommands)
+    if args.command == "memory":
+        from yflow.memory.cli import dispatch_memory
+        return dispatch_memory(args)
+
     handlers = {
         "run": _cmd_run,
         "list": _cmd_list,
