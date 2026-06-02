@@ -987,6 +987,86 @@ def _enforce_step_scope(
         raise ScopeViolation(step["id"], violations, scope or [])
 
 
+def _build_progress_log(
+    workflow: dict,
+    current_step: dict,
+    session: Any,
+    pre_step_porcelain: str,
+) -> dict:
+    """Build a human-readable progress snapshot for the pending file.
+
+    Captures:
+      - workflow name + description
+      - completed steps with output previews (capped at 300 chars each)
+      - current step + its message
+      - remaining steps (just IDs + types)
+      - files modified by the workflow so far
+      - resume / reject CLI commands
+
+    This is the artifact that lets a reviewer (or future them) pick up
+    where they left off after a long delay, even if the original session
+    is long gone.
+    """
+    steps = workflow.get("steps", [])
+    step_map = {s["id"]: s for s in steps}
+    all_ids = [s["id"] for s in steps]
+    current_id = current_step["id"]
+    try:
+        current_idx = all_ids.index(current_id)
+    except ValueError:
+        current_idx = len(all_ids)
+
+    completed: list[dict] = []
+    for s in steps[:current_idx]:
+        sid = s["id"]
+        out = session.outputs.get(sid, "")
+        completed.append({
+            "id": sid,
+            "type": s.get("type", "subagent"),
+            "output_preview": (out[:300] + "…") if len(out) > 300 else out,
+            "output_bytes": len(out),
+        })
+
+    remaining: list[dict] = []
+    for s in steps[current_idx + 1:]:
+        remaining.append({
+            "id": s["id"],
+            "type": s.get("type", "subagent"),
+        })
+
+    # Files modified by the workflow so far (vs initial pre-step baseline)
+    # Use "." as fallback — never os.getcwd(), which can fail if the test
+    # fixture cleaned up the cwd mid-run.
+    cwd = workflow.get("cwd") or "."
+    if (Path(cwd) / ".git").exists():
+        try:
+            post = _git_rev_porcelain(cwd)
+            files_changed = _diff_porcelain(pre_step_porcelain, post)
+        except Exception:
+            files_changed = []
+    else:
+        files_changed = []
+
+    return {
+        "workflow_name": workflow.get("name", "unnamed"),
+        "workflow_description": workflow.get("description", ""),
+        "current_step": {
+            "id": current_id,
+            "type": current_step.get("type", "?"),
+            "message": current_step.get("message", ""),
+        },
+        "step_index": current_idx + 1,
+        "total_steps": len(steps),
+        "completed_steps": completed,
+        "remaining_steps": remaining,
+        "files_modified": files_changed[:50],  # cap at 50
+        "files_modified_count": len(files_changed),
+        "resume_command": f"yflow checkpoint approve {current_id}",
+        "reject_command": f"yflow checkpoint reject {current_id} --note 'why'",
+        "rejection_aborts_workflow": True,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Workflow execution engine — native orchestration
 # ---------------------------------------------------------------------------
@@ -1070,8 +1150,19 @@ def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
             elif stype == "minimax":
                 execute_minimax_step(step, session)
             elif stype == "human_checkpoint":
-                # v0.6.0: pause for human review (interactive or async)
-                execute_checkpoint(step, workflow_name=workflow_name, cwd=workflow_cwd)
+                # v0.6.0: pause for human review (interactive or async).
+                # Build a progress_log so the reviewer can pick up where
+                # they left off — critical when the review is delayed
+                # (cron-deferred workflows, long human delays).
+                progress_log = _build_progress_log(
+                    workflow, step, session, pre_step_changes
+                )
+                execute_checkpoint(
+                    step,
+                    workflow_name=workflow_name,
+                    cwd=workflow_cwd,
+                    progress_log=progress_log,
+                )
             elif stype == "acceptance_tests":
                 # v0.6.0: run pytest, lock to tests/
                 from yflow.agents.factory import execute_acceptance_tests_step

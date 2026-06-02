@@ -158,5 +158,49 @@ class TestExecuteCheckpointNonInteractive(unittest.TestCase):
             self.assertEqual(payload["status"], "pending")
 
 
+class TestProgressLogInPendingFile(unittest.TestCase):
+    """Pending file should include a progress_log so reviewers can pick up
+    where they left off after a long delay."""
+
+    def test_progress_log_persisted(self):
+        with temp_cwd() as d, fake_stdin(""), fake_tty(False):
+            progress_log = {
+                "workflow_name": "test-wf",
+                "completed_steps": [{"id": "s1", "type": "subagent", "output_preview": "hello"}],
+                "current_step": {"id": "cp", "type": "human_checkpoint", "message": "review?"},
+                "remaining_steps": [{"id": "s2", "type": "subagent"}],
+                "resume_command": "yflow checkpoint approve cp",
+                "files_modified": [],
+            }
+            with self.assertRaises(SystemExit):
+                execute_checkpoint(
+                    {"id": "cp", "message": "review?"},
+                    workflow_name="test-wf",
+                    cwd=d,
+                    progress_log=progress_log,
+                )
+            payload = read_pending("cp", cwd=d)
+            self.assertIsNotNone(payload)
+            self.assertIn("progress_log", payload)
+            self.assertEqual(payload["progress_log"]["workflow_name"], "test-wf")
+            self.assertEqual(len(payload["progress_log"]["completed_steps"]), 1)
+            self.assertEqual(payload["progress_log"]["resume_command"],
+                             "yflow checkpoint approve cp")
+
+    def test_no_progress_log_still_works(self):
+        with temp_cwd() as d, fake_stdin(""), fake_tty(False):
+            with self.assertRaises(SystemExit):
+                execute_checkpoint(
+                    {"id": "cp", "message": "review?"},
+                    workflow_name="test-wf",
+                    cwd=d,
+                    # no progress_log
+                )
+            payload = read_pending("cp", cwd=d)
+            self.assertIsNotNone(payload)
+            # No progress_log key when not provided
+            self.assertNotIn("progress_log", payload)
+
+
 if __name__ == "__main__":
     unittest.main()
