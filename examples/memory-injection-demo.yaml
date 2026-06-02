@@ -1,0 +1,65 @@
+# Memory injection example — uses the v0.5.0 `memory:` section.
+#
+# Shows: cold memory auto-injected into every step's prompt,
+# budget enforcement, and MinimaxAgent direct step.
+
+name: "memory-injection-demo"
+description: "Demo: inject cold memory into every step, use M3 directly for review"
+version: "1.0.0"
+
+# Inject these markdown files into every step's context.
+# Storage: ~/.local/share/yflow/memory/<slug>.md
+memory:
+  cold_load:
+    - infra/minimax-m3-config
+    - infra/pipeline-canonical-numbers
+  budget_chars: 4000
+  markers: ["★", "[!]", "→"]
+
+variables:
+  CODE_FILE: "src/example.py"
+
+steps:
+  # Stage 1: Read code via local command
+  - id: read_code
+    name: "Read the target file"
+    type: command
+    command: "cat $variables.CODE_FILE"
+
+  # Stage 2: Direct M3 review (cold memory auto-prepended)
+  - id: review_code
+    name: "Review code with M3"
+    type: minimax
+    effort: medium
+    model: MiniMax-M3
+    prompt: |
+      Review the code from the previous step for:
+      1. Security issues
+      2. Performance bottlenecks
+      3. Style consistency
+
+      Output a short bullet list. Be specific.
+    depends_on: [read_code]
+
+  # Stage 3: Generate a brief test
+  - id: write_test
+    name: "Write a basic test"
+    type: subagent
+    context: |
+      Based on the code review, write a pytest file at tests/test_example.py
+      with 2-3 simple test cases.
+
+      Note: M3 config and canonical numbers are auto-injected from memory.
+    toolsets: [file]
+    depends_on: [review_code]
+
+  # Stage 4: Save findings to memory for future use
+  - id: save_insights
+    name: "Persist findings to memory"
+    type: command
+    command: |
+      yflow memory add projects/example-review \
+        --title "Example code review findings" \
+        --type reference \
+        --tags "review,example" \
+        --from-file /tmp/review-findings.md

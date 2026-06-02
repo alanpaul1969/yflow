@@ -443,9 +443,85 @@ hermes workflow webhook --port 9001
 
 Configure routes in `~/.hermes/workflows/webhook.yaml`.
 
+## yflow memory — Second-Tier Storage (v0.5.0+)
+
+Store persistent notes as markdown files in `~/.local/share/yflow/memory/`
+(XDG-compliant). Each entry has YAML frontmatter (title, type, tags, updated)
+plus a markdown body. Zero new dependencies.
+
+```bash
+# Add a memory entry
+yflow memory add infra/minimax-m3-config \
+  --title "M3 model config" \
+  --type infrastructure \
+  --tags "minimax,m3" \
+  --from-file config.md
+
+# List, search, inject into LLM context
+yflow memory list
+yflow memory search "M3"
+yflow memory inject infra/minimax-m3-config infra/pipeline-canonical-numbers
+
+# Inject into workflow steps automatically:
+yflow memory check   # budget + staleness report
+yflow memory diet    # interactive cleanup
+```
+
+Override storage via `$YFLOW_MEMORY_DIR`. See `examples/memory-injection-demo.yaml`.
+
+## Memory Injection in Workflows (v0.5.0+)
+
+Workflows can declare persistent context to inject into every step:
+
+```yaml
+name: my-workflow
+memory:
+  cold_load:                       # auto-injected as context for each step
+    - infra/minimax-m3-config
+    - infra/pipeline-canonical-numbers
+  budget_chars: 4000               # warning if total exceeds
+  markers: ["★", "[!]", "→"]      # canonical markers
+```
+
+Each step gets the merged content prepended to its prompt. No need for the
+LLM to query memory each time. Works with all step types that take a
+`prompt`/`context` field (subagent, reasonix, opencode, **minimax**).
+
+## Native M3 Step Type (v0.5.0+)
+
+Use MiniMax M3 directly as a step, without going through Hermes or Reasonix.
+Uses stdlib `urllib.request` — zero new deps.
+
+```yaml
+steps:
+  - id: review_with_m3
+    type: minimax
+    effort: high          # low|medium|high|max (default: high)
+    model: MiniMax-M3
+    prompt: "Review this diff for security issues..."
+```
+
+Auth (any of):
+- `api_key: sk-...` in step
+- `$YFLOW_MINIMAX_API_KEY` env var
+- `~/.config/yflow/auth.json` → `{"minimax_api_key": "sk-..."}`
+
+## Delay-Tolerant Template (v0.5.0+)
+
+For multi-session changes (user not in real-time):
+
+```bash
+yflow create my-big-change --from delay-tolerant \
+  --set DESCRIPTION="Add new gbrain endpoint" \
+  --set NAME_SLUG=add-gbrain-endpoint
+```
+
+Generates a 7-phase workflow: bootstrap → discovery → ux → openspec → workflow → implement → audit
+with mandatory backup, abort criteria, and status_page_slug for cross-session resumption.
+
 ## Learn More
 
-- [Examples](./examples/)
+- [Examples](./examples/) — `memory-injection-demo.yaml`, `delay-tolerant-feature.yaml`
 - [GitHub Repository](https://github.com/alanpaul1969/yflow)
 - [Report an Issue](https://github.com/alanpaul1969/yflow/issues)
 
