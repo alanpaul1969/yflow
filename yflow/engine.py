@@ -4,16 +4,38 @@ YAML Workflow Engine — pure-Python multi-agent workflow orchestrator.
 Translates declarative YAML workflow definitions into executable plans.
 Supports subagent delegation, native command execution, variable passing,
 sub-workflows, and template-based creation. One dependency: PyYAML.
+
+v0.6.0 adds factory-pattern boundary enforcement:
+  - tools_allowlist per step (prompt-injected tool boundary)
+  - scope per step (post-run git diff check)
+  - rules_file per step (auto-injected project rules, CLAUDE.md sim)
+  - human_checkpoint step type (3-checkpoint factory pattern)
+  - acceptance_tests step type (read story → pytest → tests/ only)
+  - implementation_validator step type (pure audit, no fixes)
 """
 
 from __future__ import annotations
 
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
+
+from yflow.boundary import (
+    ScopeViolation,
+    build_rules_text,
+    build_tools_allowlist_text,
+    enforce_scope,
+    get_git_changed_files,
+)
+from yflow.checkpoint import (
+    EX_DEFERRED,
+    CheckpointDecision,
+    execute_checkpoint,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -846,6 +868,126 @@ def classify_task(description: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# v0.6.0 factory-pattern helpers
+# ---------------------------------------------------------------------------
+
+
+def _git_rev_porcelain(cwd: str) -> str:
+    """Snapshot of `git status --porcelain` for change diffing.
+
+    Returns empty string if not a git repo or git fails. Used to compute
+    which files a single step modified (before vs. after). Uses
+    --untracked-files=all so newly created files inside untracked
+    directories appear individually.
+    """
+    if not (Path(cwd) / ".git").exists():
+        return ""
+    try:
+        r = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        return r.stdout
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return ""
+
+
+def _diff_porcelain(before: str, after: str) -> list[str]:
+    """Files that appeared in `after` but not in `before` (porcelain format)."""
+    before_set = set()
+    for line in before.splitlines():
+        if len(line) >= 4:
+            path = line[3:].strip()
+            if " -> " in path:
+                path = path.split(" -> ", 1)[1]
+            before_set.add(path)
+    new_files: list[str] = []
+    for line in after.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        if path not in before_set:
+            new_files.append(path)
+    return new_files
+
+
+def _apply_step_boundaries(step: dict, base_dir: str) -> None:
+    """Pre-step: inject tools_allowlist and rules_file into step prompt.
+
+    Modifies step in place. Sets _resolved_prompt/_resolved_context if not
+    already set, prepending the boundary text so the agent sees the
+    constraints at the top of its task description.
+    """
+    tools = step.get("tools")
+    rules_file = step.get("rules_file")
+
+    if not tools and not rules_file:
+        return
+
+    prepend = ""
+    if tools:
+        prepend += build_tools_allowlist_text(tools)
+    if rules_file:
+        rules_text = build_rules_text(rules_file, base_dir=base_dir)
+        if rules_text:
+            prepend += rules_text
+        else:
+            print(f"[yflow] ⚠️  rules_file {rules_file!r} not found or empty")
+
+    if not prepend:
+        return
+
+    # Prepend to whichever prompt field the step has. If unresolved, resolve
+    # then prepend. We set _resolved_* directly so the dispatch step
+    # doesn't re-resolve and clobber our injection.
+    if "prompt" in step:
+        if "_resolved_prompt" not in step:
+            from yflow.engine import WorkflowSession  # local import to avoid cycle
+            step["_resolved_prompt"] = WorkflowSession({}).resolve(step["prompt"])
+        step["_resolved_prompt"] = prepend + step["_resolved_prompt"]
+    elif "context" in step:
+        if "_resolved_context" not in step:
+            from yflow.engine import WorkflowSession
+            step["_resolved_context"] = WorkflowSession({}).resolve(step["context"])
+        step["_resolved_context"] = prepend + step["_resolved_context"]
+
+
+def _enforce_step_scope(
+    step: dict,
+    cwd: str,
+    pre_step_porcelain: str,
+) -> None:
+    """Post-step: raise ScopeViolation if step modified files outside scope.
+
+    Compares git status before/after the step to find what THIS step changed
+    (not the cumulative workflow diff). Skipped when:
+      - step has no scope/forbidden declared
+      - cwd is not a git repo
+    """
+    scope = step.get("scope")
+    forbidden = step.get("forbidden")
+    if not scope and not forbidden:
+        return
+    if not (Path(cwd) / ".git").exists():
+        # Non-git dir — can't enforce. Warn once.
+        return
+    post = _git_rev_porcelain(cwd)
+    step_changes = _diff_porcelain(pre_step_porcelain, post)
+    if not step_changes:
+        return
+    from yflow.boundary import check_scope
+    violations = check_scope(step_changes, scope or [], forbidden or [])
+    if violations:
+        raise ScopeViolation(step["id"], violations, scope or [])
+
+
+# ---------------------------------------------------------------------------
 # Workflow execution engine — native orchestration
 # ---------------------------------------------------------------------------
 
@@ -885,6 +1027,8 @@ def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
     wdir = workflows_dir or WORKFLOWS_DIR
 
     deferred_steps = []
+    workflow_name = workflow.get("name", "unnamed-workflow")
+    workflow_cwd = workflow.get("cwd", os.getcwd())
 
     for wave in waves:
         for sid in wave:
@@ -895,13 +1039,21 @@ def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
             if workflow_cold_load:
                 step["_cold_load"] = workflow_cold_load
 
+            # ---- v0.6.0: pre-step hooks (tools_allowlist, rules_file) ----
+            # These inject into _resolved_prompt/_resolved_context so the
+            # agent sees the boundary/rules at the top of its task.
+            _apply_step_boundaries(step, base_dir=workflow_cwd)
+
             # Resolve context/command/prompt with current session state
-            if "context" in step:
+            if "context" in step and "_resolved_context" not in step:
                 step["_resolved_context"] = session.resolve(step["context"])
-            if "command" in step:
+            if "command" in step and "_resolved_command" not in step:
                 step["_resolved_command"] = session.resolve(step["command"])
-            if "prompt" in step:
+            if "prompt" in step and "_resolved_prompt" not in step:
                 step["_resolved_prompt"] = session.resolve(step["prompt"])
+
+            # ---- v0.6.0: per-step git baseline for scope check ----
+            pre_step_changes = _git_rev_porcelain(workflow_cwd)
 
             if stype == "command":
                 execute_command_step(step, session)
@@ -917,6 +1069,17 @@ def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
                 execute_kanban_step(step, session)
             elif stype == "minimax":
                 execute_minimax_step(step, session)
+            elif stype == "human_checkpoint":
+                # v0.6.0: pause for human review (interactive or async)
+                execute_checkpoint(step, workflow_name=workflow_name, cwd=workflow_cwd)
+            elif stype == "acceptance_tests":
+                # v0.6.0: run pytest, lock to tests/
+                from yflow.agents.factory import execute_acceptance_tests_step
+                execute_acceptance_tests_step(step, session)
+            elif stype == "implementation_validator":
+                # v0.6.0: pure audit, no file modifications
+                from yflow.agents.factory import execute_implementation_validator_step
+                execute_implementation_validator_step(step, session)
             elif stype == "subagent":
                 # Default to reasonix ACP.  Hermes provider stays deferred for
                 # backward compatibility with existing delegate_task callers.
@@ -927,6 +1090,15 @@ def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
             else:
                 # skill — defer to external executor
                 deferred_steps.append(step)
+
+            # ---- v0.6.0: post-step scope enforcement ----
+            # Skip for human_checkpoint (no file changes) and validator
+            # (read-only by design). For all other step types, check
+            # that the step's git diff is within its declared scope.
+            if stype not in ("human_checkpoint", "implementation_validator"):
+                _enforce_step_scope(
+                    step, workflow_cwd, pre_step_changes
+                )
 
     # Build prompt for deferred steps
     prompt = ""

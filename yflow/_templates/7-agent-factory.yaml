@@ -1,0 +1,160 @@
+# =============================================================================
+# 7-Agent Software Factory — yflow reference template
+# =============================================================================
+#
+# Implements the pattern from @sairahul1 (via BlockTempo):
+#   https://www.blocktempo.com/claude-code-software-factory-7-agents/
+#
+# 7 specialized agents + 3 human checkpoints. Each agent has a strict
+# tool allowlist and write scope. The human gates appear after Story
+# (1), Spec (2), and Implementation Validator (3).
+#
+# Usage:
+#   yflow factory init my-feature      # scaffolds a project from this template
+#   yflow run my-feature               # runs the full factory
+#
+# Branching: copy this file and customize. Each project gets its own
+# workflow + AGENTS.md.
+# =============================================================================
+
+name: "7-Agent Software Factory"
+description: "BlockTempo reference: 7 specialized agents + 3 human checkpoints"
+
+# Memory: cold-load project context into every agent (CLAUDE.md sim)
+memory:
+  cold_load: [project-context, coding-style]
+  budget_chars: 8000
+
+# =============================================================================
+# PHASE 1: Research + Story (read-only, no code changes)
+# =============================================================================
+
+steps:
+  # ---- Agent 1: Codebase Researcher (read-only) ----
+  - id: research-codebase
+    type: subagent
+    tools: [read, search_files, glob, gitnexus]
+    scope: []            # read-only; no writes allowed
+    rules_file: ./AGENTS.md
+    prompt: |
+      Scan the existing codebase and produce a research report.
+      Identify:
+        - Files relevant to the user's feature request
+        - Existing patterns and conventions
+        - Risks and dependencies
+        - Open questions for the spec writer
+
+  # ---- Agent 2: Story Writer (read-only) ----
+  - id: write-stories
+    type: subagent
+    tools: [read]
+    scope: []
+    rules_file: ./AGENTS.md
+    prompt: |
+      Based on the codebase research and the user's feature request,
+      produce user stories with acceptance criteria.
+      Output format:
+        # User Story
+        As a [role], I want [behavior], so that [outcome].
+
+        ## Acceptance Criteria
+        - [ ] criterion 1
+        - [ ] criterion 2
+        - [ ] criterion 3
+
+  # ---- CHECKPOINT 1: approve stories ----
+  - id: review-stories
+    type: human_checkpoint
+    after: write-stories
+    message: |
+      ⏸  Review the user stories above. Approve to continue to Spec,
+      or reject with feedback to revise.
+
+# =============================================================================
+# PHASE 2: Spec (read-only, but produces the contract)
+# =============================================================================
+
+  # ---- Agent 3: Spec Writer (read-only) ----
+  - id: write-spec
+    type: subagent
+    tools: [read]
+    scope: []
+    rules_file: ./AGENTS.md
+    prompt: |
+      Turn the approved user stories into a technical spec.
+      Cover: data model changes, API changes, frontend changes,
+      required tests, risks, and open questions.
+
+  # ---- CHECKPOINT 2: approve spec ----
+  - id: review-spec
+    type: human_checkpoint
+    after: write-spec
+    message: |
+      ⏸  Review the technical spec. If you see "store ID in memory"
+      or similar red flags, reject now. Approve to begin implementation.
+
+# =============================================================================
+# PHASE 3: Implementation (writes code in scope-locked folders)
+# =============================================================================
+
+  # ---- Agent 4: Backend Builder (writes backend/ only) ----
+  - id: build-backend
+    type: subagent
+    tools: [read, write, edit, shell, git]
+    scope: [backend/, services/, api/]
+    forbidden: ["frontend/**", "tests/**", "*.md"]
+    rules_file: ./AGENTS.md
+    prompt: |
+      Implement the backend portion of the approved spec.
+      Tooling: you may only modify files under backend/, services/, api/.
+      You MUST NOT touch frontend/, tests/, or *.md files.
+      When done, list the files you created or modified.
+
+  # ---- Agent 5: Frontend Builder (writes frontend/ only) ----
+  - id: build-frontend
+    type: subagent
+    tools: [read, write, edit, shell, git]
+    scope: [frontend/, web/, mobile/, lib/ui/]
+    forbidden: ["backend/**", "api/**", "services/**", "tests/**"]
+    rules_file: ./AGENTS.md
+    prompt: |
+      Read the backend builder's output (build-backend). Implement the
+      frontend using the API shapes it produced. Do not invent new
+      endpoints. If the API is wrong for UI, report back via the
+      spec writer's pattern — do not patch.
+      Tooling: you may only modify files under frontend/, web/, mobile/.
+
+# =============================================================================
+# PHASE 4: Verification (acceptance tests + audit)
+# =============================================================================
+
+  # ---- Agent 6: Test Verifier (writes tests/ only) ----
+  - id: verify-acceptance
+    type: acceptance_tests
+    source: write-stories
+    test_command: "pytest -x --tb=short -q"
+    may_modify: ["tests/**"]
+    prompt: |
+      Run the acceptance tests. Report which criteria pass and fail.
+
+  # ---- Agent 7: Implementation Validator (read-only audit) ----
+  - id: validate-implementation
+    type: implementation_validator
+    story_ref: write-stories
+    checks: [criteria, security, scope]
+    fail_on: important
+    prompt: |
+      Audit the implementation. Check:
+        - Every acceptance criterion has a matching test
+        - No hardcoded secrets in the diff
+        - Files modified are within the declared scopes
+      Output a structured verdict. Do NOT modify any files.
+
+  # ---- CHECKPOINT 3: approve validator verdict ----
+  - id: review-validator
+    type: human_checkpoint
+    after: validate-implementation
+    message: |
+      ⏸  Review the implementation validator's verdict.
+      PASS = safe to open PR.
+      FAIL with critical/important findings = send back to builders.
