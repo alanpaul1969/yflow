@@ -50,10 +50,15 @@ def write_pending(
     workflow: str,
     cwd: str | os.PathLike = ".",
     metadata: dict[str, Any] | None = None,
+    progress_log: dict[str, Any] | None = None,
 ) -> Path:
     """Write a .checkpoints/<id>.pending file for async review.
 
-    The file is JSON with: step_id, message, workflow, created_at, status.
+    The file is JSON with: step_id, message, workflow, created_at, status,
+    and an optional progress_log snapshot. The progress_log helps the
+    reviewer pick up where they left off even if the original session
+    is long gone (e.g. cron-deferred workflow).
+
     A separate `yflow checkpoint approve <id>` or `reject <id>` command
     (or manual file edit) can resume the workflow.
     """
@@ -67,6 +72,8 @@ def write_pending(
         "status": "pending",
         "metadata": metadata or {},
     }
+    if progress_log:
+        payload["progress_log"] = progress_log
     p = _pending_path(step_id, cwd)
     p.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return p
@@ -130,6 +137,7 @@ def execute_checkpoint(
     step: dict,
     workflow_name: str,
     cwd: str | os.PathLike = ".",
+    progress_log: dict | None = None,
 ) -> None:
     """Execute a human_checkpoint step.
 
@@ -137,6 +145,9 @@ def execute_checkpoint(
         step: The step dict (must have id, message).
         workflow_name: Identifier of the workflow (for the pending file).
         cwd: Working directory for the .checkpoints/ folder.
+        progress_log: Optional human-readable snapshot of what happened
+            before this checkpoint (built by the engine). Saved into the
+            pending file so reviewers can pick up where they left off.
 
     Raises:
         CheckpointDecision: if the reviewer rejects.
@@ -176,6 +187,7 @@ def execute_checkpoint(
         workflow=workflow_name,
         cwd=cwd,
         metadata=metadata,
+        progress_log=progress_log,
     )
     print(
         f"\n[checkpoint] Step {step_id!r} requires human review.\n"

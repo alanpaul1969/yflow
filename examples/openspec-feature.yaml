@@ -1,0 +1,214 @@
+# =============================================================================
+# OpenSpec Feature Workflow — 7-agent factory for spec-first development
+# =============================================================================
+#
+# Integrates the BlockTempo 7-agent factory pattern with OpenSpec's
+# spec-first workflow. Each agent has a strict tool allowlist and write
+# scope, and 3 human checkpoints gate: story approval, spec approval,
+# validator verdict.
+#
+# Why this workflow:
+#   - Spec-first means the spec IS the contract. Each agent reads the
+#     prior agent's output, ensuring the implementation traces back to
+#     an approved spec.
+#   - OpenSpec is mandatory in the YOUR_PROJECT stack (per the project's
+#     memory); this workflow bakes spec-first into a 7-agent pipeline.
+#   - Tool allowlists keep each agent honest: researchers don't write,
+#     builders don't audit, validators don't fix.
+#
+# Usage:
+#   yflow run examples/openspec-feature.yaml --name my-feature
+#   yflow factory init my-feature  # scaffold includes this template
+#
+# OpenSpec output structure (per workflow run):
+#   openspec/changes/<name>/
+#     proposal.md         ← Story Writer output (user stories)
+#     tasks.md            ← tasks updated by Builder agents
+#     design.md           ← Spec Writer output
+#     specs/...           ← capability deltas (WHEN spec is approved)
+# =============================================================================
+
+name: "OpenSpec Feature — 7-Agent Factory"
+
+# Memory: cold-load project context so every agent starts informed
+memory:
+  cold_load: [openspec-conventions, coding-style, project-context]
+  budget_chars: 8000
+
+# Variables — override with --set name=<feature-slug>
+variables:
+  feature_name: "new-feature"   # OpenSpec change name (kebab-case)
+  openspec_root: "./openspec"   # path to OpenSpec directory
+
+steps:
+  # ===========================================================================
+  # PHASE 1: Research (read-only, no writes)
+  # ===========================================================================
+
+  # ---- Agent 1: Codebase Researcher ----
+  - id: research-codebase
+    type: subagent
+    tools: [read, search_files, glob, gitnexus]
+    scope: []
+    rules_file: ./AGENTS.md
+    prompt: |
+      You are the Codebase Researcher for feature "$feature_name".
+      Read OpenSpec conventions at $openspec_root/README.md and scan the
+      existing code to produce a research report. Cover:
+        - Relevant existing modules and patterns
+        - Similar features already implemented (for reuse)
+        - Risks, dependencies, breaking-change surface
+        - Open questions for the Story Writer
+
+  # ---- Agent 2: Story Writer (writes proposal.md) ----
+  - id: write-proposal
+    type: subagent
+    tools: [read, write]
+    scope: ["$openspec_root/changes/$feature_name/proposal.md"]
+    forbidden: ["**/*.py", "**/*.dart", "**/specs/**"]
+    rules_file: ./AGENTS.md
+    prompt: |
+      You are the Story Writer for feature "$feature_name".
+      Based on the codebase research, write the OpenSpec proposal at
+      $openspec_root/changes/$feature_name/proposal.md.
+
+      Required sections:
+        ## Why
+        One-paragraph problem statement.
+
+        ## What Changes
+        Bullet list of user-visible changes.
+
+        ## Impact
+        - Affected specs: list existing capabilities that change
+        - Affected code: list modules to modify
+        - Breaking change: yes/no
+
+        ## User Stories
+        - As a [role], I want [behavior], so that [outcome].
+        - Each story MUST have testable acceptance criteria.
+
+        ## Acceptance Criteria
+        - [ ] criterion 1 (testable)
+        - [ ] criterion 2 (testable)
+        - [ ] criterion 3 (testable)
+
+  # ---- CHECKPOINT 1: Approve proposal ----
+  - id: review-proposal
+    type: human_checkpoint
+    after: write-proposal
+    message: |
+      ⏸  Review the OpenSpec proposal at:
+         $openspec_root/changes/$feature_name/proposal.md
+
+      Approve to continue to spec writing, or reject with feedback.
+
+  # ===========================================================================
+  # PHASE 2: Spec (read existing code, write design.md + capability deltas)
+  # ===========================================================================
+
+  # ---- Agent 3: Spec Writer (writes design.md + specs/...) ----
+  - id: write-spec
+    type: subagent
+    tools: [read, write]
+    scope:
+      - "$openspec_root/changes/$feature_name/design.md"
+      - "$openspec_root/changes/$feature_name/specs/**"
+    forbidden: ["**/*.py", "**/*.dart", "**/src/**"]
+    rules_file: ./AGENTS.md
+    prompt: |
+      You are the Spec Writer for feature "$feature_name".
+      Read the approved proposal, then write:
+        1. $openspec_root/changes/$feature_name/design.md
+           Cover: data model changes, API contract, edge cases, risks.
+        2. $openspec_root/changes/$feature_name/specs/<capability>/spec.md
+           Per OpenSpec convention: one file per affected capability.
+           Use ## ADDED Requirements, ## MODIFIED Requirements, ## REMOVED Requirements.
+
+      Do NOT write code. Specs only. The builders implement later.
+
+  # ---- CHECKPOINT 2: Approve spec ----
+  - id: review-spec
+    type: human_checkpoint
+    after: write-spec
+    message: |
+      ⏸  Review the OpenSpec spec:
+         $openspec_root/changes/$feature_name/design.md
+         $openspec_root/changes/$feature_name/specs/
+
+      Approve to begin implementation, or reject with feedback.
+
+  # ===========================================================================
+  # PHASE 3: Implementation (build, scope-locked to actual code paths)
+  # ===========================================================================
+
+  # ---- Agent 4: Backend Builder ----
+  - id: build-backend
+    type: subagent
+    tools: [read, write, edit, shell, git]
+    scope: ["backend/", "services/", "api/", "src/"]
+    forbidden: ["frontend/**", "web/**", "mobile/**", "tests/**", "**/specs/**"]
+    rules_file: ./AGENTS.md
+    prompt: |
+      You are the Backend Builder for feature "$feature_name".
+      Read the approved spec. Implement the backend portion:
+        - Modify files under backend/, services/, api/, or src/ only
+        - Update $openspec_root/changes/$feature_name/tasks.md as you go
+          (mark tasks complete with [x], add new tasks as discovered)
+        - Do NOT touch frontend, web, mobile, tests, or spec files
+      When done, list the files you modified.
+
+  # ---- Agent 5: Frontend Builder ----
+  - id: build-frontend
+    type: subagent
+    tools: [read, write, edit, shell, git]
+    scope: ["frontend/", "web/", "mobile/", "lib/ui/"]
+    forbidden: ["backend/**", "api/**", "services/**", "tests/**", "**/specs/**"]
+    rules_file: ./AGENTS.md
+    prompt: |
+      You are the Frontend Builder for feature "$feature_name".
+      Read the backend builder's output (build-backend). Implement the
+      frontend using the API shapes the backend produced.
+        - Modify files under frontend/, web/, mobile/, or lib/ui/ only
+        - Do not invent new endpoints; if the API shape is wrong, report
+          back rather than patching
+        - Update $openspec_root/changes/$feature_name/tasks.md
+
+  # ===========================================================================
+  # PHASE 4: Verification (acceptance tests + spec compliance audit)
+  # ===========================================================================
+
+  # ---- Agent 6: Test Verifier (writes tests, runs pytest) ----
+  - id: verify-acceptance
+    type: acceptance_tests
+    source: write-proposal
+    test_command: "pytest -x --tb=short -q"
+    may_modify: ["tests/**", "test/**"]
+    prompt: |
+      You are the Test Verifier for feature "$feature_name".
+      Read the acceptance criteria from write-proposal's output.
+      Write tests under tests/ that cover each criterion, then run pytest.
+      Lock writes to tests/ only.
+
+  # ---- Agent 7: Implementation Validator (read-only audit) ----
+  - id: validate-spec
+    type: implementation_validator
+    story_ref: write-proposal
+    checks: [criteria, security, scope]
+    fail_on: important
+    prompt: |
+      You are the Implementation Validator for feature "$feature_name".
+      Audit the implementation:
+        - Every acceptance criterion has a matching test (criteria check)
+        - No hardcoded secrets in the diff (security check)
+        - Files modified are within the declared scopes (scope check)
+      Output a structured verdict. Do NOT modify any files.
+
+  # ---- CHECKPOINT 3: Approve validator verdict ----
+  - id: review-validator
+    type: human_checkpoint
+    after: validate-spec
+    message: |
+      ⏸  Review the implementation validator's verdict.
+         PASS = safe to run `openspec validate $feature_name` and open PR.
+         FAIL with important/critical findings = send back to builders.
