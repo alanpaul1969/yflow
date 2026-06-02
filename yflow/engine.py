@@ -34,7 +34,7 @@ TEMPLATES_DIR = os.path.join(os.path.dirname(WORKFLOWS_DIR), "workflows", "_temp
 # YAML Schema
 # ---------------------------------------------------------------------------
 
-STEP_TYPES = {"subagent", "skill", "command", "reasonix", "opencode", "workflow", "gbrain", "kanban"}
+STEP_TYPES = {"subagent", "skill", "command", "reasonix", "opencode", "workflow", "gbrain", "kanban", "minimax"}
 
 
 def validate_workflow(data: dict) -> List[str]:
@@ -46,6 +46,14 @@ def validate_workflow(data: dict) -> List[str]:
 
     if "name" not in data:
         errors.append("Missing required field: 'name'")
+
+    # Validate memory: section (v0.5.0)
+    if "memory" in data:
+        try:
+            from yflow.memory_injection import validate_memory_section
+            errors.extend(validate_memory_section(data["memory"]))
+        except Exception as e:
+            errors.append(f"memory section validation failed: {e}")
 
     if "steps" not in data or not isinstance(data["steps"], list):
         errors.append("Missing required field: 'steps' (must be a list)")
@@ -82,6 +90,9 @@ def validate_workflow(data: dict) -> List[str]:
 
         if stype == "kanban" and "goal" not in step:
             errors.append(f"{prefix}: type=kanban requires 'goal' field")
+
+        if stype == "minimax" and not (step.get("prompt") or step.get("context")):
+            errors.append(f"{prefix}: type=minimax requires 'prompt' or 'context' field")
 
         if stype == "gbrain" and "action" not in step:
             errors.append(f"{prefix}: type=gbrain requires 'action' field (query/search/put/get)")
@@ -429,6 +440,22 @@ def execute_gbrain_step(step: dict, session: WorkflowSession) -> str:
         msg = f"[gbrain] {action} error: {e}"
         session.capture(sid, msg)
         return msg
+
+
+
+
+def execute_minimax_step(step: dict, session: WorkflowSession) -> str:
+    """Execute a `type: minimax` step — call MiniMax M3 directly via stdlib.
+
+    Requires one of:
+      - step["api_key"]
+      - $YFLOW_MINIMAX_API_KEY env var
+      - ~/.config/yflow/auth.json (key: minimax_api_key)
+
+    YAML fields: see yflow.agents.minimax for full schema.
+    """
+    from yflow.agents.minimax import run as run_minimax
+    return run_minimax(step, session)
 
 
 def execute_kanban_step(step: dict, session: WorkflowSession) -> str:
@@ -838,6 +865,17 @@ def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
     """
     steps = workflow.get("steps", [])
     variables = workflow.get("variables", {})
+    workflow_memory = workflow.get("memory", {}) or {}
+    workflow_cold_load = workflow_memory.get("cold_load", []) if isinstance(workflow_memory, dict) else []
+    if workflow_memory.get("budget_chars"):
+        try:
+            from yflow.memory_injection import check_budget
+            total, ok = check_budget(workflow_cold_load, workflow_memory["budget_chars"])
+            if not ok:
+                print(f"[yflow] ⚠️  memory.cold_load budget exceeded: {total} > {workflow_memory['budget_chars']} chars (consider trimming)")
+        except Exception as e:
+            print(f"[yflow] ⚠️  memory budget check failed: {e}")
+
     session = WorkflowSession(variables)
     waves = resolve_execution_order(steps)
     step_map = {s["id"]: s for s in steps}
@@ -849,6 +887,10 @@ def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
         for sid in wave:
             step = step_map[sid]
             stype = step.get("type", "subagent")
+
+            # Inject cold memory slugs into step context (v0.5.0)
+            if workflow_cold_load:
+                step["_cold_load"] = workflow_cold_load
 
             # Resolve context/command/prompt with current session state
             if "context" in step:
@@ -870,6 +912,8 @@ def execute_workflow(workflow: dict, workflows_dir: str = None) -> dict:
                 execute_gbrain_step(step, session)
             elif stype == "kanban":
                 execute_kanban_step(step, session)
+            elif stype == "minimax":
+                execute_minimax_step(step, session)
             elif stype == "subagent":
                 # Default to reasonix ACP.  Hermes provider stays deferred for
                 # backward compatibility with existing delegate_task callers.
@@ -900,7 +944,19 @@ def build_deferred_prompt(
     name = workflow.get("name", "Unnamed Workflow")
     description = workflow.get("description", "")
 
+    # Inject cold memory (v0.5.0)
+    cold_section = ""
+    workflow_memory = workflow.get("memory", {}) or {}
+    cold_load = workflow_memory.get("cold_load", []) if isinstance(workflow_memory, dict) else []
+    if cold_load:
+        try:
+            from yflow.memory_injection import build_cold_context
+            cold_section = build_cold_context(cold_load) + "\n"
+        except Exception as e:
+            cold_section = f"# ⚠️ memory load failed: {e}\n\n"
+
     parts = [
+        cold_section,
         f"Execute the remaining steps for workflow: **{name}**",
         f"_{description}_" if description else "",
         "",

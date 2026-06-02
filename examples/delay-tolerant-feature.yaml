@@ -1,0 +1,61 @@
+# Real-world example: same structure as our 521-line
+# integrate-gbrain-memory-curve.yaml but simplified to a 3-step demo.
+# Shows: delay-tolerant 7-phase pattern, backup, abort criteria.
+
+name: "add-new-endpoint"
+description: "Add a new FastAPI endpoint to a service, with backup and verify"
+version: "1.0.0"
+
+# yflow memory slugs auto-loaded as cold context
+memory:
+  cold_load:
+    # - "infra/minimax-m3-config"  # Uncomment to inject M3 config
+  budget_chars: 4000
+
+# AGENTS.md banned operations:
+abort_criteria:
+  - "AGENTS.md禁制被違反（不重啟 llama-server, 不改 AutoPKM_Desktop GUI）"
+  - "已有 73 個 endpoint 數量下降"
+  - "verify 步驟 syntax check 失敗"
+  - "用戶未確認 abort"
+  - "測試覆蓋率 < 80%"
+
+variables:
+  service_path: "~/Public/Automatic_PKM/AutoPKM_Desktop"
+  endpoint_name: "example_endpoint"
+  backup_dir: "~/OpenSpec/openspec/changes/add-example/backups"
+
+steps:
+  - id: backup
+    name: "📦 Backup"
+    type: command
+    command: |
+      mkdir -p $variables.backup_dir
+      TS=$(date +%Y%m%d-%H%M%S)
+      echo "✅ Backup dir ready: $variables.backup_dir/$TS"
+      # cp $variables.service_path/desktop_bridge.py $variables.backup_dir/bridge.py.$TS
+
+  - id: add_endpoint
+    name: "Add endpoint"
+    type: subagent
+    context: |
+      Add a new FastAPI endpoint:
+        @app.get("/api/v1/$variables.endpoint_name")
+        async def example():
+            return {"status": "ok"}
+
+      Add it to $variables.service_path/desktop_bridge.py.
+      Don't modify any GUI files.
+    toolsets: [file]
+    depends_on: [backup]
+
+  - id: verify
+    name: "Verify endpoint"
+    type: command
+    command: |
+      # Syntax check
+      python3 -c "import ast; ast.parse(open('$variables.service_path/desktop_bridge.py').read())"
+      echo "✅ Syntax OK"
+      # Count endpoints (must stay >= 73)
+      grep -c '@app\\.\\(get\\|post\\)' $variables.service_path/desktop_bridge.py
+    depends_on: [add_endpoint]

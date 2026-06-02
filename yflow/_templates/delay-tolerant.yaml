@@ -1,0 +1,161 @@
+# Delay-Tolerant Workflow Template
+#
+# For changes that span multiple sessions, where the user is NOT
+# available in real-time. Adds 7-phase structure with mandatory
+# backup, OpenSpec artifacts, and cross-session status page.
+#
+# Usage:
+#   yflow create my-change --from delay-tolerant --set DESCRIPTION="..."
+#   # or copy and edit manually
+#
+# Companion skill: hermes-workflow-dsl (delay-tolerant-workflows reference)
+
+name: "{NAME}"
+description: "{DESCRIPTION}"
+version: "1.0.0"
+type: change
+
+# Status page (auto-updated as workflow progresses) — slug in yflow memory
+status_page_slug: "projects/{NAME_SLUG}/plan-status"
+openspec_change: "{NAME_SLUG}"
+
+variables:
+  openspec_dir: "~/OpenSpec/openspec/changes/{NAME_SLUG}"
+  backups_dir: "$variables.openspec_dir/backups"
+  # Add your project-specific paths here
+  # bridge_path: "~/Public/Automatic_PKM/AutoPKM_Desktop/desktop_bridge.py"
+  # gui_path: "~/Public/Automatic_PKM/AutoPKM_Desktop/src/gui/main_window.py"
+
+# Inject persistent context for every step
+memory:
+  cold_load:
+    # Add slugs here that should always be available to LLM steps
+    # e.g. "infra/minimax-m3-config"
+  budget_chars: 4000
+  markers: ["★", "[!]", "→"]
+
+steps:
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 0: Bootstrap — backup + verify environment
+  # ═══════════════════════════════════════════════════════════════
+  - id: phase0_backup
+    name: "📦 Phase 0: Backup + environment check"
+    type: command
+    command: |
+      TS=$(date +%Y%m%d-%H%M%S)
+      BACKUP="$variables.backups_dir"
+      mkdir -p "$BACKUP"
+      echo "  ✅ Created backup dir: $BACKUP"
+      # Add your backup commands here:
+      # cp "$variables.bridge_path" "$BACKUP/desktop_bridge.py.$TS"
+      # echo "  ✅ Backed up: bridge ($(wc -l < $variables.bridge_path) lines)"
+      echo ""
+      echo "  ⚠️  Verify all ✅ above before proceeding"
+
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 1: Discovery — read affected code paths
+  # ═══════════════════════════════════════════════════════════════
+  - id: phase1_discovery
+    name: "🔍 Phase 1: Discovery"
+    type: subagent
+    context: |
+      Read all code paths affected by: {DESCRIPTION}
+
+      Document:
+      1. Files to modify (full paths)
+      2. Existing API contracts that must not break
+      3. AGENTS.md constraints in the project root
+      4. Test files that exercise this code
+      5. CRITICAL FINDINGS that change the design (if any)
+
+      Do NOT modify any files. Just report.
+    toolsets: [file]
+    depends_on: [phase0_backup]
+
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 2: UX Design (if user-facing)
+  # ═══════════════════════════════════════════════════════════════
+  - id: phase2_ux
+    name: "🎨 Phase 2: UX Design"
+    type: subagent
+    context: |
+      Design the user-facing flow for: {DESCRIPTION}
+
+      Output ux-design.md with:
+      1. 3 user journeys (happy path, edge case, error)
+      2. Screen wireframes (ASCII or text)
+      3. Constraints from AGENTS.md
+      4. Existing patterns to follow
+    toolsets: [file]
+    depends_on: [phase1_discovery]
+    # Skip this step if NOT user-facing:
+    # skip_if: "no UI changes needed"
+
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 3: OpenSpec — proposal + specs + tasks
+  # ═══════════════════════════════════════════════════════════════
+  - id: phase3_openspec
+    name: "📋 Phase 3: OpenSpec"
+    type: subagent
+    context: |
+      Write the OpenSpec change files in $variables.openspec_dir:
+
+      1. proposal.md (Why / What / Capabilities / Impact)
+      2. specs/<change-id>.md (delta from current behavior)
+      3. tasks.md (numbered, bite-sized, with Definition of Done)
+
+      Cross-reference Phase 1 findings and Phase 2 UX design.
+    toolsets: [file]
+    depends_on: [phase2_ux]
+
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 4: Workflow refinement
+  # ═══════════════════════════════════════════════════════════════
+  - id: phase4_workflow
+    name: "🔧 Phase 4: Workflow refinement"
+    type: subagent
+    context: |
+      Refine this workflow file based on Phase 3 tasks.md:
+      - Each task should map to one or more steps
+      - Add verify steps between implementation steps
+      - Define abort criteria (5+ items)
+      - Update status_page_slug to match
+    toolsets: [file]
+    depends_on: [phase3_openspec]
+
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 5: Implementation (piece by piece with verify between)
+  # ═══════════════════════════════════════════════════════════════
+  - id: phase5_implement
+    name: "⚙️ Phase 5: Implementation"
+    type: subagent
+    context: |
+      Implement ONE PART at a time from the workflow.
+      After each part, run its verify step.
+      If a verify step fails, STOP and report — do not continue.
+
+      ABORT CRITERIA (any one = stop):
+      - AGENTS.md禁令被違反
+      - Existing API contracts broken
+      - Test failures not explainable
+      - File corruption detected
+      - User request contradicts Phase 1 findings
+    toolsets: [terminal, file]
+    depends_on: [phase4_workflow]
+
+  # ═══════════════════════════════════════════════════════════════
+  # Phase 6: Final Audit
+  # ═══════════════════════════════════════════════════════════════
+  - id: phase6_audit
+    name: "✅ Phase 6: Final Audit"
+    type: subagent
+    context: |
+      Run all verify steps. Cross-check: existing functionality not broken.
+
+      Report:
+      1. Which phases passed / failed
+      2. Which abort criteria were hit (if any)
+      3. Final state summary
+      4. Suggested follow-up tasks
+    toolsets: [terminal, file]
+    depends_on: [phase5_implement]
