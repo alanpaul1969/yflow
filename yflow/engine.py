@@ -56,7 +56,12 @@ TEMPLATES_DIR = os.path.join(os.path.dirname(WORKFLOWS_DIR), "workflows", "_temp
 # YAML Schema
 # ---------------------------------------------------------------------------
 
-STEP_TYPES = {"subagent", "skill", "command", "reasonix", "opencode", "workflow", "gbrain", "kanban", "minimax"}
+STEP_TYPES = {
+    "subagent", "skill", "command", "reasonix", "opencode",
+    "workflow", "gbrain", "kanban", "minimax",
+    # v0.6.0 — 7-agent factory pattern
+    "human_checkpoint", "acceptance_tests", "implementation_validator",
+}
 
 
 def validate_workflow(data: dict) -> List[str]:
@@ -104,8 +109,8 @@ def validate_workflow(data: dict) -> List[str]:
                 f"(must be one of: {', '.join(STEP_TYPES)})"
             )
 
-        if stype == "subagent" and "context" not in step:
-            errors.append(f"{prefix}: type=subagent requires 'context' field")
+        if stype == "subagent" and "context" not in step and "prompt" not in step:
+            errors.append(f"{prefix}: type=subagent requires 'context' or 'prompt' field")
 
         if stype == "command" and "command" not in step:
             errors.append(f"{prefix}: type=command requires 'command' field")
