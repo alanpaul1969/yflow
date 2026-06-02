@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yflow"
-version = "0.5.1"
+version = "0.6.0"
 description = "The Makefile for AI workflows — 1 dependency, zero daemons, provider-agnostic"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -50,7 +50,7 @@ Repository = "https://github.com/alanpaul1969/yflow.git"
 Issues = "https://github.com/alanpaul1969/yflow/issues"
 
 [project.scripts]
-yamlflow = "yamlflow.cli:main"
+yflow = "yflow.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

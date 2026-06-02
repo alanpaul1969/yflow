@@ -4,6 +4,8 @@
 
 Define multi-agent workflows in YAML. Run them anywhere. No Docker, no servers, no lock-in.
 
+**v0.6.0 ships the 7-agent factory pattern** (see `yflow factory init`): tool allowlists, scope enforcement, project rules auto-injection, 3 human checkpoints, and a reference template. Inspired by [BlockTempo / @sairahul1](https://www.blocktempo.com/claude-code-software-factory-7-agents/).
+
 ## Why yflow?
 
 AI agent platforms are powerful but heavyweight — dozens of dependencies, daemons, Docker, and vendor lock-in. yflow is different:

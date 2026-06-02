@@ -79,6 +79,13 @@ def main():
     # --- init ---
     subs.add_parser("init", help="Interactive setup wizard — configure yflow defaults")
 
+    # --- factory (v0.6.0) ---
+    factory_p = subs.add_parser("factory", help="7-agent factory scaffolding")
+    factory_subs = factory_p.add_subparsers(dest="factory_command", required=True)
+    init_f = factory_subs.add_parser("init", help="Scaffold a 7-agent factory project")
+    init_f.add_argument("name", help="Project name (used for workflow filename)")
+    init_f.add_argument("--out", "-o", default=".", help="Output directory (default: current dir)")
+
     # --- memory (v0.5.0) ---
     from yflow.memory.cli import register_memory_parser
     register_memory_parser(subs)
@@ -106,8 +113,31 @@ def _dispatch(args):
         "validate": _cmd_validate,
         "create": _cmd_create,
         "init": _cmd_init,
+        "factory": _cmd_factory,
     }
     return handlers.get(args.command, lambda _: _unknown(args.command))(args)
+
+
+def _cmd_factory(args):
+    """Dispatch `yflow factory <subcommand>`."""
+    if args.factory_command == "init":
+        from yflow.factory import init_factory
+        created = init_factory(args.name, out_dir=args.out)
+        print(f"✓ Scaffolded 7-agent factory project: {args.name}")
+        print(f"  Workflow:    {created['workflow']}")
+        if created['agents'].exists():
+            print(f"  AGENTS.md:   {created['agents']}  (edit with your project rules)")
+        else:
+            print(f"  AGENTS.md:   {created['agents']}  (kept existing)")
+        print(f"  Checkpoints: {created['checkpoints_dir']}")
+        print()
+        print("Next steps:")
+        print(f"  1. Edit {created['workflow']} to describe your feature")
+        print(f"  2. Edit {created['agents']} with your project rules")
+        print(f"  3. Run: yflow run {created['workflow']}")
+        return 0
+    print(f"Unknown factory subcommand: {args.factory_command}")
+    return 1
 
 
 def _unknown(cmd):
