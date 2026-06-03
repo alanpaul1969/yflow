@@ -4,7 +4,9 @@
 
 Define multi-agent workflows in YAML. Run them anywhere. No Docker, no servers, no lock-in.
 
-**v0.6.0 ships the 7-agent factory pattern** (see `yflow factory init`): tool allowlists, scope enforcement, project rules auto-injection, 3 human checkpoints, and a reference template. Inspired by [BlockTempo / @sairahul1](https://www.blocktempo.com/claude-code-software-factory-7-agents/).
+**v0.6.0+ ships the 7-agent factory pattern** (see `yflow factory init`): tool allowlists, scope enforcement, project rules auto-injection, 3 human checkpoints, and a reference template. Inspired by [BlockTempo / @sairahul1](https://www.blocktempo.com/claude-code-software-factory-7-agents/).
+
+**v0.6.3+ adds register-aware design rules** (port of [pbakaus/impeccable](https://github.com/pbakaus/impeccable)): `yflow antipattern <path>` CLI scans Flutter/CSS/HTML for design tells, `implementation_validator` has a `design` check, and `DESIGN.md` declarations of `register: brand|product` auto-inject the matching anti-pattern list into every step's prompt.
 
 ## Why yflow?
 

@@ -16,6 +16,7 @@ from typing import Any
 
 from yflow.boundary import ScopeViolation, enforce_scope, get_git_changed_files
 from yflow.checkpoint import CheckpointDecision
+from yflow.impeccable_scan import MATCHERS as _IMPECCABLE_MATCHERS, RULES as _IMPECCABLE_RULES
 
 
 # ====================================================================
@@ -219,6 +220,32 @@ def execute_implementation_validator_step(step: dict, session: Any) -> str:
                         "issue": f"Possible hardcoded secret matching {pat.pattern[:30]}...",
                     })
                     break
+
+    # ---- design (v0.6.3) ----
+    # Port of impeccable's deterministic anti-pattern rules, narrowed
+    # to Flutter-detectable tells. Runs on .dart / .css / .scss / .html
+    # files in the diff. See yflow/impeccable_scan.py for the full
+    # rule registry.
+    if "design" in checks:
+        for f in changed:
+            if not f.endswith((".dart", ".css", ".scss", ".html", ".htm")):
+                continue
+            try:
+                content = Path(f).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for rule in _IMPECCABLE_RULES:
+                matcher = _IMPECCABLE_MATCHERS[rule["matches"]]
+                hits = matcher(content, Path(f))
+                for line_no, _ in hits:
+                    findings.append({
+                        "severity": rule["severity"],
+                        "check": "design",
+                        "file": f,
+                        "line": line_no,
+                        "rule_id": rule["id"],
+                        "issue": rule["name"],
+                    })
 
     # ---- scope_drift ----
     if "scope" in checks:

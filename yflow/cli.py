@@ -86,6 +86,12 @@ def main():
     init_f.add_argument("name", help="Project name (used for workflow filename)")
     init_f.add_argument("--out", "-o", default=".", help="Output directory (default: current dir)")
 
+    # --- antipattern (v0.6.3) ---
+    ap_p = subs.add_parser("antipattern", help="Scan a Flutter/CSS/HTML project for design anti-patterns (port of pbakaus/impeccable)")
+    ap_p.add_argument("path", help="Project lib/ directory to scan (e.g. ./lib)")
+    ap_p.add_argument("--json", action="store_true", help="Output as JSON instead of human-readable report")
+    ap_p.add_argument("--severity", choices=["high", "medium", "low"], help="Filter by minimum severity")
+
     # --- memory (v0.5.0) ---
     from yflow.memory.cli import register_memory_parser
     register_memory_parser(subs)
@@ -114,6 +120,7 @@ def _dispatch(args):
         "create": _cmd_create,
         "init": _cmd_init,
         "factory": _cmd_factory,
+        "antipattern": _cmd_antipattern,
     }
     return handlers.get(args.command, lambda _: _unknown(args.command))(args)
 
@@ -129,15 +136,90 @@ def _cmd_factory(args):
             print(f"  AGENTS.md:   {created['agents']}  (edit with your project rules)")
         else:
             print(f"  AGENTS.md:   {created['agents']}  (kept existing)")
+        if created['product'].exists():
+            print(f"  PRODUCT.md:  {created['product']}  (set register: brand|product)")
+        else:
+            print(f"  PRODUCT.md:  {created['product']}  (kept existing)")
+        if created['design'].exists():
+            print(f"  DESIGN.md:   {created['design']}  (color + typography + banned tells)")
+        else:
+            print(f"  DESIGN.md:   {created['design']}  (kept existing)")
         print(f"  Checkpoints: {created['checkpoints_dir']}")
         print()
         print("Next steps:")
-        print(f"  1. Edit {created['workflow']} to describe your feature")
-        print(f"  2. Edit {created['agents']} with your project rules")
-        print(f"  3. Run: yflow run {created['workflow']}")
+        print(f"  1. Edit {created['product']} to set register: brand|product")
+        print(f"  2. Edit {created['design']} with your visual direction")
+        print(f"  3. Edit {created['agents']} with your project rules")
+        print(f"  4. Edit {created['workflow']} to describe your feature")
+        print(f"  5. Run: yflow run {created['workflow']}")
         return 0
     print(f"Unknown factory subcommand: {args.factory_command}")
     return 1
+
+
+def _cmd_antipattern(args):
+    """Scan a Flutter/CSS/HTML project for design anti-patterns.
+
+    Port of pbakaus/impeccable's deterministic rules. Outputs human-
+    readable report by default, or JSON with --json for CI use.
+    """
+    import json as _json
+    from pathlib import Path
+    from yflow.impeccable_scan import (
+        scan_project, print_report, RULES,
+    )
+
+    path = Path(args.path)
+    if not path.exists():
+        print(f"Path not found: {path}")
+        return 1
+    if not path.is_dir():
+        print(f"Not a directory: {path}")
+        return 1
+
+    results = scan_project(path)
+
+    if args.severity:
+        # Filter out findings below the requested severity
+        sev_rank = {"low": 1, "medium": 2, "high": 3}
+        threshold = sev_rank[args.severity]
+        for rule_id, data in results.items():
+            sev = data["rule"]["severity"]
+            if sev_rank.get(sev, 0) < threshold:
+                data["files"] = []
+
+    if args.json:
+        # Machine-readable output
+        out = {
+            "scan_path": str(path),
+            "rules": [
+                {
+                    "id": rid,
+                    "name": data["rule"]["name"],
+                    "severity": data["rule"]["severity"],
+                    "count": sum(len(hits) for _, hits in data["files"]),
+                    "files": [
+                        {"file": f, "lines": [ln for ln, _ in hits]}
+                        for f, hits in data["files"]
+                    ],
+                }
+                for rid, data in results.items()
+                if data["files"]
+            ],
+            "total_tells": sum(
+                sum(len(hits) for _, hits in data["files"])
+                for data in results.values()
+            ),
+        }
+        print(_json.dumps(out, indent=2, ensure_ascii=False))
+        return 0 if out["total_tells"] == 0 else 2
+
+    print_report(results, path)
+    total = sum(
+        sum(len(hits) for _, hits in data["files"])
+        for data in results.values()
+    )
+    return 0 if total == 0 else 2
 
 
 def _unknown(cmd):

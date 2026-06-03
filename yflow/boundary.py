@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Iterable
@@ -84,19 +85,111 @@ def load_rules_file(path: str, base_dir: str | os.PathLike = ".") -> str:
         return ""
 
 
+def detect_register(rules_text: str) -> str | None:
+    """Detect register from a rules/design file (brand | product | None).
+
+    Looks for `register: brand` or `register: product` in the file's
+    frontmatter or top section. Case-insensitive. Returns None if not
+    found — caller should treat None as 'no register detected' and
+    fall back to neutral rules.
+
+    Inspired by pbakaus/impeccable's brand-vs-product register pattern.
+    """
+    if not rules_text:
+        return None
+    # Match `register: brand|product` (case-insensitive) in first 20 lines
+    head = "\n".join(rules_text.splitlines()[:20])
+    m = re.search(r"(?im)^\s*register:\s*(brand|product)\b", head)
+    if m:
+        return m.group(1).lower()
+    return None
+
+
+# Anti-pattern lists injected per register (v0.6.3, port from
+# pbakaus/impeccable's brand.md / product.md). Kept short and
+# project-agnostic — for the full 7-domain reference, see the
+# design-systems skill / impeccable skill.
+
+_REGISTER_BRAND_TELLS = """\
+
+## Register: BRAND
+
+Design IS the product (landing pages, marketing, brand surfaces).
+Permission: Committed / Full palette / Drenched color strategies.
+Risk tolerance: high. Distinctiveness over safety.
+
+**Banned (match-and-refuse):**
+- Cream/sand/parchment body backgrounds (the 2026 AI default)
+- Hero-metric template (big number + small label + gradient accent)
+- Identical card grids (icon + heading + text, repeated)
+- Side-stripe borders (border-left/right colored > 1px)
+- Glassmorphism as default (BackdropFilter used decoratively)
+- Tiny uppercase tracked eyebrows above every section
+- Numbered section markers (01 / 02 / 03) above every section
+- Inter / Roboto / Geist / Fraunces / Space Grotesk fonts
+- Em dashes in body copy
+- "X theater" copy ("engagement theater", "productivity theater")
+- Aphoristic cadence as default voice
+
+**Allowed:**
+- Single saturated color drench (terracotta, oxblood, deep ochre, near-black)
+- Asymmetric compositions, varied spacing for rhythm
+- Imagery-led hero (real project assets or Unsplash with verified URLs)
+"""
+
+_REGISTER_PRODUCT_TELLS = """\
+
+## Register: PRODUCT
+
+Design SERVES the product (app UI, admin, dashboard, tools).
+Familiarity is a feature. Earned trust. The tool should disappear
+into the task.
+
+**Banned (match-and-refuse):**
+- Decorative motion that doesn't convey state
+- Display fonts in UI labels, buttons, data
+- Reinvented standard affordances (custom scrollbars, weird form controls)
+- Heavy color or full-saturation accents on inactive states
+- Modal as first thought (exhaust inline / progressive alternatives first)
+- Inconsistent component vocabulary across screens
+- Cream/sand body backgrounds (still an AI tell even for products)
+- Side-stripe borders on cards
+- Ghost cards (1px border + heavy box-shadow)
+- Over-rounding on cards (24px+)
+
+**Allowed:**
+- System fonts and familiar sans defaults (Inter, SF Pro, system-ui)
+- Standard navigation (top bar + side nav, breadcrumbs, tabs, command palettes)
+- Density: tables with many rows, panels with many labels
+- Consistency over surprise
+- 150-250 ms motion (state change, feedback, loading, reveal only)
+"""
+
+
 def build_rules_text(rules_path: str, base_dir: str | os.PathLike = ".") -> str:
     """Generate the prompt fragment that prepends project rules.
 
     Mirrors Claude Code's CLAUDE.md auto-injection: every step that
     declares `rules_file: ./AGENTS.md` gets the file contents prepended
     to its prompt as project context.
+
+    v0.6.3: register-aware. If the rules file declares
+    `register: brand|product`, appends the matching anti-pattern list
+    so the agent always knows what NOT to do for this register.
     """
     body = load_rules_file(rules_path, base_dir)
     if not body:
         return ""
+    register = detect_register(body)
+    register_block = ""
+    if register == "brand":
+        register_block = _REGISTER_BRAND_TELLS
+    elif register == "product":
+        register_block = _REGISTER_PRODUCT_TELLS
     return (
         "\n## PROJECT RULES (from " + str(rules_path) + " — auto-injected)\n\n"
         + body
+        + register_block
         + "\n## END PROJECT RULES\n"
     )
 

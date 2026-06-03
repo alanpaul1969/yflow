@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yflow"
-version = "0.6.2"
+version = "0.6.3"
 description = "The Makefile for AI workflows — 1 dependency, zero daemons, provider-agnostic"
 readme = "README.md"
 license = {file = "LICENSE"}
