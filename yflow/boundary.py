@@ -88,20 +88,48 @@ def load_rules_file(path: str, base_dir: str | os.PathLike = ".") -> str:
 def detect_register(rules_text: str) -> str | None:
     """Detect register from a rules/design file (brand | product | None).
 
-    Looks for `register: brand` or `register: product` in the file's
-    frontmatter or top section. Case-insensitive. Returns None if not
-    found — caller should treat None as 'no register detected' and
-    fall back to neutral rules.
+    Recognizes two common patterns:
+      1. YAML frontmatter style: `register: brand`
+      2. Markdown heading style: `## Register` followed by `brand` on next line
+         (or in the same line via `## Register: brand`)
+
+    Case-insensitive. Returns None if not found — caller treats None
+    as 'no register detected' and falls back to neutral rules.
 
     Inspired by pbakaus/impeccable's brand-vs-product register pattern.
     """
     if not rules_text:
         return None
-    # Match `register: brand|product` (case-insensitive) in first 20 lines
-    head = "\n".join(rules_text.splitlines()[:20])
+    # Look in the first 30 lines
+    head_lines = rules_text.splitlines()[:30]
+    head = "\n".join(head_lines)
+
+    # Pattern 1: YAML frontmatter `register: brand|product`
     m = re.search(r"(?im)^\s*register:\s*(brand|product)\b", head)
     if m:
         return m.group(1).lower()
+
+    # Pattern 2: Markdown heading ## Register (or # Register) with
+    # value on next line, e.g.:
+    #   ## Register
+    #
+    #   brand
+    for i, line in enumerate(head_lines):
+        if re.match(r"(?im)^\s*#{1,4}\s*register\b", line):
+            # Look at the next non-empty line
+            for j in range(i + 1, min(i + 4, len(head_lines))):
+                val = head_lines[j].strip().lower()
+                # Strip optional `# comment` after the value
+                val_clean = re.sub(r"\s*#.*$", "", val).strip()
+                if val_clean in ("brand", "product"):
+                    return val_clean
+                if val:  # non-empty, non-match → stop looking
+                    break
+            # Pattern 3: same-line `## Register: brand`
+            inline = re.search(r"(?i)register[:\s]+(brand|product)\b", line)
+            if inline:
+                return inline.group(1).lower()
+
     return None
 
 

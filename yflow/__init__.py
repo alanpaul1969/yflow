@@ -17,7 +17,7 @@ from yflow.engine import (
     validate_workflow,
 )
 
-__version__ = "0.6.3"
+__version__ = "0.6.3.1"
 __all__ = [
     "build_workflow_prompt",
     "classify_task",

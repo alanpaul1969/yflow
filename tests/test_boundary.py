@@ -90,6 +90,42 @@ class TestBuildRulesText(unittest.TestCase):
         text = build_rules_text("/nonexistent.md")
         self.assertEqual(text, "")
 
+    def test_register_brand_injects_brand_tells(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("# Design\n\n## Register\n\nbrand\n\n## Color\nOKLCH\n")
+            path = f.name
+        try:
+            text = build_rules_text(path)
+            self.assertIn("PROJECT RULES", text)
+            self.assertIn("Register: BRAND", text)
+            self.assertIn("Cream/sand/parchment", text)  # brand tell
+        finally:
+            os.unlink(path)
+
+    def test_register_product_injects_product_tells(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("# Product\n\n## Register\n\nproduct\n\n")
+            path = f.name
+        try:
+            text = build_rules_text(path)
+            self.assertIn("Register: PRODUCT", text)
+            self.assertIn("Decorative motion", text)  # product tell
+            self.assertNotIn("Register: BRAND", text)
+        finally:
+            os.unlink(path)
+
+    def test_no_register_neutral(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("# Random\n\nNo register here.\n")
+            path = f.name
+        try:
+            text = build_rules_text(path)
+            self.assertIn("PROJECT RULES", text)
+            self.assertNotIn("Register: BRAND", text)
+            self.assertNotIn("Register: PRODUCT", text)
+        finally:
+            os.unlink(path)
+
 
 class TestCheckScope(unittest.TestCase):
     def test_no_scope_allows_everything(self):
